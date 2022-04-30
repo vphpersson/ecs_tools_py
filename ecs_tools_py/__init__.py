@@ -160,7 +160,7 @@ def make_log_handler(
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
 
-            self._generate_fields = generate_field_names
+            self._generate_field_names = generate_field_names
             self._sequence_number = 0
 
         @property
@@ -176,7 +176,7 @@ def make_log_handler(
             """
 
             try:
-                ecs_log_entry = entry_from_log_record(record=record, field_names=self._generate_fields_set)
+                ecs_log_entry = entry_from_log_record(record=record, field_names=self._generate_field_names)
             except:
                 # TODO: Is this properly done?
                 frameinfo = getframeinfo(currentframe())
