@@ -5,6 +5,7 @@ from logging import LogRecord, WARNING, ERROR, CRITICAL, Handler
 from pathlib import PurePath
 from traceback import format_tb
 from textwrap import dedent
+from errno import errorcode
 from json import dumps as json_dumps
 from sys import exc_info as sys_exc_info
 from inspect import currentframe, getframeinfo
@@ -45,7 +46,7 @@ def error_entry_from_exc_info(exc_info) -> Error:
         message=str(exception_value),
         stack_trace=dedent(''.join(format_tb(exception_traceback))).rstrip(),
         type=f'{exception_type.__module__}.{exception_type.__qualname__}',
-        id=getattr(exception_value, 'errno', None)
+        id=errorcode[errno_code] if (errno_code := getattr(exception_value, 'errno', None)) is not None else None
     )
 
 
