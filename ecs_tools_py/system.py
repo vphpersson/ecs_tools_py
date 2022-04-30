@@ -303,6 +303,7 @@ def entry_from_system(field_names: Optional[Sequence[str]] = None) -> Base:
                     setattr(namespace_storage, derived_short_field_name, value)
 
     log_entry = Base()
+
     populate_namespace_entry(
         entry_class=Base,
         namespace_field_names=field_names,

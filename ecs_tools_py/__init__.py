@@ -1,10 +1,13 @@
 from datetime import datetime
-from typing import Final, Optional, Type, Sequence
+from typing import Final, Optional, Type, Sequence, TypeVar
 from re import compile as re_compile, Pattern as RePattern
-from logging import LogRecord, WARNING, ERROR, CRITICAL
+from logging import LogRecord, WARNING, ERROR, CRITICAL, Handler
 from pathlib import PurePath
 from traceback import format_tb
 from textwrap import dedent
+from json import dumps as json_dumps
+from sys import exc_info as sys_exc_info
+from inspect import currentframe, getframeinfo
 
 from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread
 from psutil import boot_time as psutil_boot_time
@@ -133,3 +136,89 @@ def entry_from_log_record(record: LogRecord, field_names: Optional[Sequence[str]
     base.message = record.msg
 
     return base
+
+
+_T = TypeVar('_T', bound=Handler)
+
+
+def make_log_handler(
+    base_class: Type[_T],
+    generate_field_names: Optional[Sequence[str]] = None
+) -> Type[_T]:
+    """
+    Create a log handler that inherits from the provided base class and emits records in the ECS format.
+
+    :param base_class: A `logging.Handler` class from the log handler to be created should inherit from.
+    :param generate_field_names: A sequence of field names for field-values to be generated to complement the ones
+        derived from the `logging.LogRecord` instances. A value of `None` indicates that all field-values that are
+        supported should be generated.
+    :return: A log handler that inherits from the provided base class and emits records in the ECS format.
+    """
+
+    class ECSLoggerHandler(base_class):
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+            self._generate_fields = generate_field_names
+            self._sequence_number = 0
+
+        @property
+        def logger(self) -> str:
+            return f'{self.__class__.__module__}.{self.__class__.__qualname__}'
+
+        def emit(self, record: LogRecord) -> None:
+            """
+            Emit a log record.
+
+            :param record: A log record to be emitted.
+            :return: None
+            """
+
+            try:
+                ecs_log_entry = entry_from_log_record(record=record, field_names=self._generate_fields_set)
+            except:
+                # TODO: Is this properly done?
+                frameinfo = getframeinfo(currentframe())
+
+                super().emit(
+                    record=LogRecord(
+                        name=record.name,
+                        level=ERROR,
+                        pathname=frameinfo.filename,
+                        lineno=frameinfo.lineno,
+                        msg=json_dumps(
+                            Base(
+                                error=error_entry_from_exc_info(exc_info=sys_exc_info()),
+                                message='An error occurred when generating fields for a log record.',
+                                log=Log(logger=self.logger),
+                                event=Event(sequence=self._sequence_number)
+                            ).to_dict(),
+                            default=str
+                        ),
+                        func=frameinfo.function,
+                        args=None,
+                        exc_info=None
+                    )
+                )
+
+                # TODO: I should reconsider the sequence number system.
+                self._sequence_number += 1
+
+                ecs_log_entry = entry_from_log_record(record=record, field_names=[])
+
+            ecs_log_entry.log.logger = self.logger
+            ecs_log_entry.event.sequence = self._sequence_number
+            self._sequence_number += 1
+
+            record.exc_info = None
+            record.exc_text = None
+            record.stack_info = None
+
+            # TODO: Could I produce a key signature here?
+
+            record.msg = json_dumps(ecs_log_entry.to_dict(), default=str)
+
+            super().emit(record=record)
+
+    return ECSLoggerHandler
