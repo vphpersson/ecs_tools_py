@@ -1,11 +1,11 @@
 from logging import getLogger, Logger
-from typing import Optional, Final, Callable, Any, Type, Sequence
+from typing import Optional, Final, Callable, Any, Sequence
 from socket import gethostname as socket_gethostname, getfqdn as socket_getfqdn
 from sys import orig_argv as sys_orig_argv
 from platform import release as platform_release, system as platform_system, machine as platform_machine
 from functools import cache
 from collections import defaultdict
-from dataclasses import fields as dataclasses_fields, is_dataclass, dataclass, astuple
+from dataclasses import fields as dataclasses_fields, is_dataclass, astuple
 from os import getcwd as os_getcwd, getppid as os_getppid, getpid as os_getpid
 from shlex import join as shlex_join
 from pathlib import PurePath
@@ -14,7 +14,7 @@ from re import compile as re_compile, Pattern as RePattern
 
 # NOTE: It is necessary to import the whole module in order to retrieve classes from it dynamically.
 import ecs_py
-from ecs_py import Base
+from ecs_py import Base, ECSEntry
 from psutil import Process as PsutilProcess
 
 from ecs_tools_py.exceptions import UnexpectedFieldsError, NamespaceFieldIsNotDataclassError, UnhandledDerivedFieldError
@@ -211,18 +211,16 @@ def entry_from_system(field_names: Optional[Sequence[str]] = None) -> Base:
         raise UnexpectedFieldsError(unsupported_fields=provided_unsupported_fields)
 
     def populate_namespace_entry(
-        entry_class: Type[dataclass],
+        namespace_storage: ECSEntry,
         namespace_field_names: set[str],
-        namespace_storage,
         namespace_stack: list[str]
     ) -> None:
         """
         Populate a namespace with gathered values.
 
-        :param entry_class: The ECS entry class corresponding to the current namespace, used for compliance.
+        :param namespace_storage: A namespace instance to store gathered values.
         :param namespace_field_names: Names of fields within the current namespace hierarchy to be populated with
             gathered values.
-        :param namespace_storage:
         :param namespace_stack: A stack with which to build the full field name, in order to look up and call the
             corresponding "make function".
         :return: None
@@ -250,7 +248,7 @@ def entry_from_system(field_names: Optional[Sequence[str]] = None) -> Base:
                     if value is not None:
                         setattr(namespace_storage, namespace_field_name, value)
 
-        for entry_class_field in dataclasses_fields(entry_class):
+        for entry_class_field in dataclasses_fields(namespace_storage):
             if entry_class_field.name not in sub_namespace_to_field_names:
                 continue
 
@@ -261,12 +259,11 @@ def entry_from_system(field_names: Optional[Sequence[str]] = None) -> Base:
                     _OPTIONAL_TYPE_PATTERN.sub(repl=r'\1', string=entry_class_field_type)
                 )
 
-            if is_dataclass(entry_class_field_type):
+            if issubclass(entry_class_field_type, ECSEntry):
                 entry_class_field_storage = entry_class_field_type()
 
                 namespace_stack.append(entry_class_field.name)
                 populate_namespace_entry(
-                    entry_class=entry_class_field_type,
                     namespace_field_names=sub_namespace_to_field_names[entry_class_field.name],
                     namespace_storage=entry_class_field_storage,
                     namespace_stack=namespace_stack
@@ -276,6 +273,7 @@ def entry_from_system(field_names: Optional[Sequence[str]] = None) -> Base:
                 if any(value is not None for value in astuple(entry_class_field_storage)):
                     setattr(namespace_storage, entry_class_field.name, entry_class_field_storage)
             else:
+                # TODO: Change error name.
                 raise NamespaceFieldIsNotDataclassError(field='.'.join(namespace_stack) + f'.{entry_class_field.name}')
 
         for derived_full_field_name in derived_full_field_names:
@@ -304,11 +302,6 @@ def entry_from_system(field_names: Optional[Sequence[str]] = None) -> Base:
 
     log_entry = Base()
 
-    populate_namespace_entry(
-        entry_class=Base,
-        namespace_field_names=field_names,
-        namespace_storage=log_entry,
-        namespace_stack=[]
-    )
+    populate_namespace_entry(namespace_storage=log_entry, namespace_field_names=field_names, namespace_stack=[])
 
     return log_entry
