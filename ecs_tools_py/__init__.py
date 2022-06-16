@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Final, Optional, Type, Sequence, TypeVar
+from typing import Final, Optional, Type, Sequence, TypeVar, cast
 from re import compile as re_compile, Pattern as RePattern
 from logging import LogRecord, WARNING, ERROR, CRITICAL, Handler
 from pathlib import PurePath
@@ -144,7 +144,8 @@ _T = TypeVar('_T', bound=Handler)
 
 def make_log_handler(
     base_class: Type[_T],
-    generate_field_names: Optional[Sequence[str]] = None
+    generate_field_names: Optional[Sequence[str]] = None,
+    provider_name: Optional[str] = None
 ) -> Type[_T]:
     """
     Create a log handler that inherits from the provided base class and emits records in the ECS format.
@@ -153,6 +154,7 @@ def make_log_handler(
     :param generate_field_names: A sequence of field names for field-values to be generated to complement the ones
         derived from the `logging.LogRecord` instances. A value of `None` indicates that all field-values that are
         supported should be generated.
+    :param provider_name: The name of the source of the event.
     :return: A log handler that inherits from the provided base class and emits records in the ECS format.
     """
 
@@ -162,6 +164,7 @@ def make_log_handler(
             super().__init__(*args, **kwargs)
 
             self._generate_field_names = generate_field_names
+            self._provider_name = provider_name
             self._sequence_number = 0
 
         @property
@@ -208,8 +211,12 @@ def make_log_handler(
 
                 ecs_log_entry = entry_from_log_record(record=record, field_names=[])
 
-            ecs_log_entry.log.logger = self.logger
-            ecs_log_entry.event.sequence = self._sequence_number
+            cast(Log, ecs_log_entry.get_field_value(field_name='log', create_namespaces=True)).logger = self.logger
+
+            ecs_log_entry_event: Event = ecs_log_entry.get_field_value(field_name='event', create_namespaces=True)
+            ecs_log_entry_event.provider = self._provider_name
+            ecs_log_entry_event.sequence = self._sequence_number
+
             self._sequence_number += 1
 
             record.exc_info = None
