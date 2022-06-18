@@ -5,7 +5,7 @@ from sys import orig_argv as sys_orig_argv
 from platform import release as platform_release, system as platform_system, machine as platform_machine
 from functools import cache
 from collections import defaultdict
-from dataclasses import fields as dataclasses_fields, is_dataclass, astuple
+from dataclasses import fields as dataclasses_fields, astuple
 from os import getcwd as os_getcwd, getppid as os_getppid, getpid as os_getpid
 from shlex import join as shlex_join
 from pathlib import PurePath
