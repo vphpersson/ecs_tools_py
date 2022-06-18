@@ -118,6 +118,7 @@ def entry_from_log_record(record: LogRecord, field_names: Optional[Sequence[str]
 
     base.event = base.event or Event()
     base.event.created = datetime.fromtimestamp(record.created).astimezone()
+    base.event.dataset = record.name.split('.')[0]
 
     if add_event_timezone:
         base.event.timezone = event_timezone_from_datetime(dt=base.event.created)
@@ -222,7 +223,6 @@ def make_log_handler(
 
             ecs_log_entry_event: Event = ecs_log_entry.get_field_value(field_name='event', create_namespaces=True)
             ecs_log_entry_event.provider = self._provider_name
-            ecs_log_entry_event.dataset = record.name.split('.')[0]
             ecs_log_entry_event.sequence = self._sequence_number
 
             self._sequence_number += 1
@@ -233,8 +233,11 @@ def make_log_handler(
 
             log_entry_dict: dict[str, Any] = ecs_log_entry.to_dict()
 
+            # NOTE: `ecs_log_entry_event.dataset` cannot be `None` as it is set in `entry_from_log_record`.
             if extra_keys := set(record.__dict__.keys()) - _RESERVED_LOG_RECORD_KEYS:
-                log_entry_dict[ecs_log_entry_event.dataset] = {key: record.__dict__[key] for key in extra_keys}
+                log_entry_dict[ecs_log_entry_event.dataset] = {
+                    key: record.__dict__[key] for key in extra_keys
+                }
 
             # TODO: Could I produce a key signature here?
             record.msg = json_dumps(log_entry_dict, default=str)
