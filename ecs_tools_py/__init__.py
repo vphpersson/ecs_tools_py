@@ -12,6 +12,7 @@ from inspect import currentframe, getframeinfo
 
 from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread
 from psutil import boot_time as psutil_boot_time
+from string_utils_py import to_snake_case
 
 from ecs_tools_py.system import entry_from_system
 
@@ -147,13 +148,31 @@ def entry_from_log_record(record: LogRecord, field_names: Optional[Sequence[str]
     return base
 
 
+def _dataset_from_provider_name(provider_name: str) -> str:
+    """
+    Generated a value for `event.dataset` from the provider name.
+
+    An accepted value shall contain only alphanumeric characters or underscores.
+
+    :param provider_name: The name of the provider from which to generate a candidate `event.dataset` value.
+    :return: A candidate `event.dataset` value.
+    """
+
+    return ''.join(
+        character
+        for character in to_snake_case(provider_name)
+        if character.isalnum() or character == '_'
+    )
+
+
 _T = TypeVar('_T', bound=Handler)
 
 
 def make_log_handler(
     base_class: Type[_T],
     generate_field_names: Optional[Sequence[str]] = None,
-    provider_name: Optional[str] = None
+    provider_name: Optional[str] = None,
+    main_dataset_fallback: Optional[str] = None
 ) -> Type[_T]:
     """
     Create a log handler that inherits from the provided base class and emits records in the ECS format.
@@ -163,6 +182,7 @@ def make_log_handler(
         derived from the `logging.LogRecord` instances. A value of `None` indicates that all field-values that are
         supported should be generated.
     :param provider_name: The name of the source of the event.
+    :param main_dataset_fallback: A value to be used for `event.dataset` in case its generated value is "__main__".
     :return: A log handler that inherits from the provided base class and emits records in the ECS format.
     """
 
@@ -221,11 +241,16 @@ def make_log_handler(
 
             cast(Log, ecs_log_entry.get_field_value(field_name='log', create_namespaces=True)).logger = self.logger
 
-            ecs_log_entry_event: Event = ecs_log_entry.get_field_value(field_name='event', create_namespaces=True)
+            ecs_log_entry_event: Event = ecs_log_entry.get_field_value(field_name='event')
             ecs_log_entry_event.provider = self._provider_name
             ecs_log_entry_event.sequence = self._sequence_number
-
             self._sequence_number += 1
+
+            if ecs_log_entry_event.dataset == '__main__':
+                if main_dataset_fallback:
+                    ecs_log_entry_event.dataset = main_dataset_fallback
+                elif ecs_log_entry_event.provider and (provider_name_dataset := _dataset_from_provider_name(provider_name=ecs_log_entry_event.provider)):
+                    ecs_log_entry_event.dataset = provider_name_dataset
 
             record.exc_info = None
             record.exc_text = None
