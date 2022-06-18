@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Final, Optional, Type, Sequence, TypeVar, cast
+from typing import Final, Optional, Type, Sequence, TypeVar, cast, Any
 from re import compile as re_compile, Pattern as RePattern
 from logging import LogRecord, WARNING, ERROR, CRITICAL, Handler
 from pathlib import PurePath
@@ -16,6 +16,13 @@ from psutil import boot_time as psutil_boot_time
 from ecs_tools_py.system import entry_from_system
 
 _DT_TIMEZONE_PATTERN: Final[RePattern] = re_compile(pattern=r'^(.{3})(.{2}).*$')
+
+# NOTE: May need to be maintained.
+_RESERVED_LOG_RECORD_KEYS: Final[set[str]] = {
+    'args', 'created', 'exc_info', 'exc_text', 'filename', 'funcName', 'levelname', 'levelno', 'lineno', 'module',
+    'msecs', 'msg', 'name', 'pathname', 'process', 'processName', 'relativeCreated', 'stack_info', 'thread',
+    'threadName'
+}
 
 
 def event_timezone_from_datetime(dt: datetime) -> str:
@@ -215,6 +222,7 @@ def make_log_handler(
 
             ecs_log_entry_event: Event = ecs_log_entry.get_field_value(field_name='event', create_namespaces=True)
             ecs_log_entry_event.provider = self._provider_name
+            ecs_log_entry_event.dataset = record.name.split('.')[0]
             ecs_log_entry_event.sequence = self._sequence_number
 
             self._sequence_number += 1
@@ -223,9 +231,13 @@ def make_log_handler(
             record.exc_text = None
             record.stack_info = None
 
-            # TODO: Could I produce a key signature here?
+            log_entry_dict: dict[str, Any] = ecs_log_entry.to_dict()
 
-            record.msg = json_dumps(ecs_log_entry.to_dict(), default=str)
+            if extra_keys := set(record.__dict__.keys()) - _RESERVED_LOG_RECORD_KEYS:
+                log_entry_dict[ecs_log_entry_event.dataset] = {key: record.__dict__[key] for key in extra_keys}
+
+            # TODO: Could I produce a key signature here?
+            record.msg = json_dumps(log_entry_dict, default=str)
 
             super().emit(record=record)
 
