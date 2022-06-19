@@ -148,6 +148,13 @@ def entry_from_log_record(record: LogRecord, field_names: Optional[Sequence[str]
     return base
 
 
+def _dumps_function(obj: Any):
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+
+    raise TypeError
+
+
 def _dataset_from_provider_name(provider_name: str) -> str:
     """
     Generated a value for `event.dataset` from the provider name.
@@ -220,13 +227,14 @@ def make_log_handler(
                         pathname=frameinfo.filename,
                         lineno=frameinfo.lineno,
                         msg=json_dumps(
-                            Base(
+                            obj=Base(
                                 error=error_entry_from_exc_info(exc_info=sys_exc_info()),
                                 message='An error occurred when generating fields for a log record.',
                                 log=Log(logger=self.logger),
                                 event=Event(sequence=self._sequence_number)
                             ).to_dict(),
-                            default=str
+                            sort_keys=True,
+                            default=_dumps_function
                         ),
                         func=frameinfo.function,
                         args=None,
@@ -265,7 +273,11 @@ def make_log_handler(
                 }
 
             # TODO: Could I produce a key signature here?
-            record.msg = json_dumps(log_entry_dict, default=str)
+            record.msg = json_dumps(
+                obj=log_entry_dict,
+                sort_keys=True,
+                default=str
+            )
 
             super().emit(record=record)
 
