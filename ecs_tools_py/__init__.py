@@ -205,6 +205,83 @@ def make_log_handler(
         def logger(self) -> str:
             return f'{self.__class__.__module__}.{self.__class__.__qualname__}'
 
+        @staticmethod
+        def _sign(message: str, log_entry_dict: dict[str, Any]) -> str:
+            log_entry_dict['event']['hash'] = signing_information.sign_function(
+                signing_information.private_key,
+                signing_information.hash_function(message.encode())
+            ).hex()
+
+            return json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
+
+        def _emit_signing_error_message(self, record_name: str) -> None:
+            frameinfo = getframeinfo(currentframe())
+
+            super().emit(
+                record=LogRecord(
+                    name=record_name,
+                    level=ERROR,
+                    pathname=frameinfo.filename,
+                    lineno=frameinfo.lineno,
+                    msg=json_dumps(
+                        obj=Base(
+                            error=error_entry_from_exc_info(exc_info=sys_exc_info()),
+                            message='An error occurred when attempting to sign a log record message.',
+                            log=Log(logger=self.logger),
+                            event=Event(
+                                provider=provider_name,
+                                dataset='ecs_tools_py',
+                                sequence=self._sequence_number
+                            )
+                        ).to_dict(),
+                        sort_keys=True,
+                        default=_dumps_function
+                    ),
+                    func=frameinfo.function,
+                    args=None,
+                    exc_info=None
+                )
+            )
+
+            self._sequence_number += 1
+
+        def _emit_generate_fields_error_message(self, record_name: str) -> None:
+            frameinfo = getframeinfo(currentframe())
+
+            log_entry_dict: dict[str, Any] = Base(
+                error=error_entry_from_exc_info(exc_info=sys_exc_info()),
+                message='An error occurred when generating fields for a log record.',
+                log=Log(logger=self.logger),
+                event=Event(
+                    provider=provider_name,
+                    dataset='ecs_tools_py',
+                    sequence=self._sequence_number
+                )
+            ).to_dict()
+
+            self._sequence_number += 1
+
+            message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
+
+            if signing_information is not None:
+                try:
+                    message: str = self._sign(message=message, log_entry_dict=log_entry_dict)
+                except:
+                    self._emit_signing_error_message(record_name=record_name)
+
+            super().emit(
+                record=LogRecord(
+                    name=record_name,
+                    level=ERROR,
+                    pathname=frameinfo.filename,
+                    lineno=frameinfo.lineno,
+                    msg=message,
+                    func=frameinfo.function,
+                    args=None,
+                    exc_info=None
+                )
+            )
+
         def emit(self, record: LogRecord) -> None:
             """
             Emit a log record.
@@ -216,107 +293,69 @@ def make_log_handler(
             try:
                 ecs_log_entry = entry_from_log_record(record=record, field_names=self._generate_field_names)
             except:
-                frameinfo = getframeinfo(currentframe())
-
-                # TODO: Should I try to sign these as well? I may want to make the some methods...
-
-                super().emit(
-                    record=LogRecord(
-                        name=record.name,
-                        level=ERROR,
-                        pathname=frameinfo.filename,
-                        lineno=frameinfo.lineno,
-                        msg=json_dumps(
-                            obj=Base(
-                                error=error_entry_from_exc_info(exc_info=sys_exc_info()),
-                                message='An error occurred when generating fields for a log record.',
-                                log=Log(logger=self.logger),
-                                event=Event(
-                                    provider=provider_name,
-                                    dataset='ecs_tools_py',
-                                    sequence=self._sequence_number
-                                )
-                            ).to_dict(),
-                            sort_keys=True,
-                            default=_dumps_function
-                        ),
-                        func=frameinfo.function,
-                        args=None,
-                        exc_info=None
-                    )
-                )
-
-                self._sequence_number += 1
-
+                self._emit_generate_fields_error_message(record_name=record.name)
                 ecs_log_entry = entry_from_log_record(record=record, field_names=[])
+
+            # Assign information about the log and provider that was provided to the make function, and a sequence
+            # number.
 
             cast(Log, ecs_log_entry.get_field_value(field_name='log', create_namespaces=True)).logger = self.logger
 
-            ecs_log_entry_event: Event = ecs_log_entry.get_field_value(field_name='event')
+            ecs_log_entry_event: Event = cast(
+                Event,
+                ecs_log_entry.get_field_value(
+                    field_name='event',
+                    create_namespaces=True
+                )
+            )
             ecs_log_entry_event.provider = self._provider_name
             ecs_log_entry_event.sequence = self._sequence_number
             self._sequence_number += 1
 
+            # Set `event.dataset` to a proper value and determine the name of the namespace that will store extra data.
+
             if ecs_log_entry_event.dataset == '__main__':
                 if main_dataset_fallback:
-                    ecs_log_entry_event.dataset = main_dataset_fallback
+                    ecs_log_entry_event.dataset = extra_data_namespace_name = main_dataset_fallback
                 elif ecs_log_entry_event.provider and (provider_name_dataset := _dataset_from_provider_name(provider_name=ecs_log_entry_event.provider)):
-                    ecs_log_entry_event.dataset = provider_name_dataset
+                    ecs_log_entry_event.dataset = extra_data_namespace_name = provider_name_dataset
+                else:
+                    extra_data_namespace_name = 'data'
+            elif not ecs_log_entry_event.dataset:
+                if ecs_log_entry_event.provider and (provider_name_dataset := _dataset_from_provider_name(provider_name=ecs_log_entry_event.provider)):
+                    ecs_log_entry_event.dataset = extra_data_namespace_name = provider_name_dataset
+                else:
+                    extra_data_namespace_name = 'data'
+            else:
+                extra_data_namespace_name = ecs_log_entry_event.dataset
+
+            log_entry_dict: dict[str, Any] = ecs_log_entry.to_dict()
+
+            # Populate a namespace with data provided in the `extra` parameter.
+
+            if extra_keys := set(record.__dict__.keys()) - _RESERVED_LOG_RECORD_KEYS:
+                log_entry_dict[extra_data_namespace_name] = {key: record.__dict__[key] for key in extra_keys}
+
+            # Create the JSON-string representation of the log record's dictionary, which constitutes the log message.
+
+            message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
+
+            # Sign the message if signing information has been provided
+
+            if signing_information is not None:
+                try:
+                    message: str = self._sign(message=message, log_entry_dict=log_entry_dict)
+                except:
+                    self._emit_signing_error_message(record_name=record.name)
+
+            record.msg = message
+
+            # Clear the record of exception information, which has already been handled, that would confuse the parent
+            # `emit` method.
 
             record.exc_info = None
             record.exc_text = None
             record.stack_info = None
-
-            log_entry_dict: dict[str, Any] = ecs_log_entry.to_dict()
-
-            # NOTE: `ecs_log_entry_event.dataset` cannot be `None` as it is set in `entry_from_log_record`.
-            if extra_keys := set(record.__dict__.keys()) - _RESERVED_LOG_RECORD_KEYS:
-                log_entry_dict[ecs_log_entry_event.dataset] = {
-                    key: record.__dict__[key] for key in extra_keys
-                }
-
-            message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
-
-            if signing_information is not None:
-                try:
-                    log_entry_dict['event']['hash'] = signing_information.sign_function(
-                        signing_information.private_key,
-                        signing_information.hash_function(message.encode())
-                    ).hex()
-
-                    message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
-                except:
-                    frameinfo = getframeinfo(currentframe())
-
-                    super().emit(
-                        record=LogRecord(
-                            name=record.name,
-                            level=ERROR,
-                            pathname=frameinfo.filename,
-                            lineno=frameinfo.lineno,
-                            msg=json_dumps(
-                                obj=Base(
-                                    error=error_entry_from_exc_info(exc_info=sys_exc_info()),
-                                    message='An error occurred when attempting to sign a log record message.',
-                                    log=Log(logger=self.logger),
-                                    event=Event(
-                                        provider=provider_name,
-                                        dataset='ecs_tools_py',
-                                        sequence=self._sequence_number
-                                    )
-                                ).to_dict(),
-                                sort_keys=True,
-                                default=_dumps_function
-                            ),
-                            func=frameinfo.function,
-                            args=None,
-                            exc_info=None
-                        )
-                    )
-
-                    self._sequence_number += 1
-
-            record.msg = message
 
             super().emit(record=record)
 
