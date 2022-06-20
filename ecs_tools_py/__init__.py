@@ -276,7 +276,7 @@ def make_log_handler(
             record.msg = json_dumps(
                 obj=log_entry_dict,
                 sort_keys=True,
-                default=str
+                default=_dumps_function
             )
 
             super().emit(record=record)
