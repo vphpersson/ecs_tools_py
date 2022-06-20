@@ -15,6 +15,7 @@ from psutil import boot_time as psutil_boot_time
 from string_utils_py import to_snake_case
 
 from ecs_tools_py.system import entry_from_system
+from ecs_tools_py.structures import SigningInformation
 
 _DT_TIMEZONE_PATTERN: Final[RePattern] = re_compile(pattern=r'^(.{3})(.{2}).*$')
 
@@ -165,11 +166,7 @@ def _dataset_from_provider_name(provider_name: str) -> str:
     :return: A candidate `event.dataset` value.
     """
 
-    return ''.join(
-        character
-        for character in to_snake_case(provider_name)
-        if character.isalnum() or character == '_'
-    )
+    return ''.join(character for character in to_snake_case(provider_name) if character.isalnum() or character == '_')
 
 
 _T = TypeVar('_T', bound=Handler)
@@ -179,7 +176,8 @@ def make_log_handler(
     base_class: Type[_T],
     generate_field_names: Optional[Sequence[str]] = None,
     provider_name: Optional[str] = None,
-    main_dataset_fallback: Optional[str] = None
+    main_dataset_fallback: Optional[str] = None,
+    signing_information: Optional[SigningInformation] = None
 ) -> Type[_T]:
     """
     Create a log handler that inherits from the provided base class and emits records in the ECS format.
@@ -190,6 +188,7 @@ def make_log_handler(
         supported should be generated.
     :param provider_name: The name of the source of the event.
     :param main_dataset_fallback: A value to be used for `event.dataset` in case its generated value is "__main__".
+    :param signing_information: Information needed for signing log record messages. Provision implies use of signing.
     :return: A log handler that inherits from the provided base class and emits records in the ECS format.
     """
 
@@ -242,7 +241,6 @@ def make_log_handler(
                     )
                 )
 
-                # TODO: I should reconsider the sequence number system.
                 self._sequence_number += 1
 
                 ecs_log_entry = entry_from_log_record(record=record, field_names=[])
@@ -272,12 +270,17 @@ def make_log_handler(
                     key: record.__dict__[key] for key in extra_keys
                 }
 
-            # TODO: Could I produce a key signature here?
-            record.msg = json_dumps(
-                obj=log_entry_dict,
-                sort_keys=True,
-                default=_dumps_function
-            )
+            message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
+
+            if signing_information is not None:
+                log_entry_dict['event']['hash'] = signing_information.sign_method(
+                    signing_information.private_key,
+                    signing_information.hash_method(message.encode())
+                ).hex()
+
+                message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
+
+            record.msg = message
 
             super().emit(record=record)
 
