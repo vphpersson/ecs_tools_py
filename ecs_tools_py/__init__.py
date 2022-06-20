@@ -216,8 +216,9 @@ def make_log_handler(
             try:
                 ecs_log_entry = entry_from_log_record(record=record, field_names=self._generate_field_names)
             except:
-                # TODO: Is this properly done?
                 frameinfo = getframeinfo(currentframe())
+
+                # TODO: Should I try to sign these as well? I may want to make the some methods...
 
                 super().emit(
                     record=LogRecord(
@@ -230,7 +231,11 @@ def make_log_handler(
                                 error=error_entry_from_exc_info(exc_info=sys_exc_info()),
                                 message='An error occurred when generating fields for a log record.',
                                 log=Log(logger=self.logger),
-                                event=Event(sequence=self._sequence_number)
+                                event=Event(
+                                    provider=provider_name,
+                                    dataset='ecs_tools_py',
+                                    sequence=self._sequence_number
+                                )
                             ).to_dict(),
                             sort_keys=True,
                             default=_dumps_function
@@ -273,12 +278,43 @@ def make_log_handler(
             message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
 
             if signing_information is not None:
-                log_entry_dict['event']['hash'] = signing_information.sign_function(
-                    signing_information.private_key,
-                    signing_information.hash_function(message.encode())
-                ).hex()
+                try:
+                    log_entry_dict['event']['hash'] = signing_information.sign_function(
+                        signing_information.private_key,
+                        signing_information.hash_function(message.encode())
+                    ).hex()
 
-                message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
+                    message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
+                except:
+                    frameinfo = getframeinfo(currentframe())
+
+                    super().emit(
+                        record=LogRecord(
+                            name=record.name,
+                            level=ERROR,
+                            pathname=frameinfo.filename,
+                            lineno=frameinfo.lineno,
+                            msg=json_dumps(
+                                obj=Base(
+                                    error=error_entry_from_exc_info(exc_info=sys_exc_info()),
+                                    message='An error occurred when attempting to sign a log record message.',
+                                    log=Log(logger=self.logger),
+                                    event=Event(
+                                        provider=provider_name,
+                                        dataset='ecs_tools_py',
+                                        sequence=self._sequence_number
+                                    )
+                                ).to_dict(),
+                                sort_keys=True,
+                                default=_dumps_function
+                            ),
+                            func=frameinfo.function,
+                            args=None,
+                            exc_info=None
+                        )
+                    )
+
+                    self._sequence_number += 1
 
             record.msg = message
 
