@@ -9,5 +9,5 @@ _T = TypeVar('_T')
 @dataclass
 class SigningInformation:
     private_key: _S
-    hash_method: Callable[[bytes], _T]
-    sign_method: Callable[[_S, _T], bytes]
+    hash_function: Callable[[bytes], _T]
+    sign_function: Callable[[_S, _T], bytes]
