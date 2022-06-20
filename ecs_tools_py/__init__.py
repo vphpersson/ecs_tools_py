@@ -273,9 +273,9 @@ def make_log_handler(
             message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
 
             if signing_information is not None:
-                log_entry_dict['event']['hash'] = signing_information.sign_method(
+                log_entry_dict['event']['hash'] = signing_information.sign_function(
                     signing_information.private_key,
-                    signing_information.hash_method(message.encode())
+                    signing_information.hash_function(message.encode())
                 ).hex()
 
                 message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
