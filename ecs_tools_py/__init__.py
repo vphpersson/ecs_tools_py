@@ -214,6 +214,12 @@ def make_log_handler(
 
             return json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
 
+        def _get_sequence_number(self) -> int:
+            """Claim a sequence number and increment."""
+            sequence_number = self._sequence_number
+            self._sequence_number += 1
+            return sequence_number
+
         def _emit_signing_error_message(self, record_name: str) -> None:
             frameinfo = getframeinfo(currentframe())
 
@@ -231,7 +237,7 @@ def make_log_handler(
                             event=Event(
                                 provider=provider_name,
                                 dataset='ecs_tools_py',
-                                sequence=self._sequence_number
+                                sequence=self._get_sequence_number()
                             )
                         ).to_dict(),
                         sort_keys=True,
@@ -243,8 +249,6 @@ def make_log_handler(
                 )
             )
 
-            self._sequence_number += 1
-
         def _emit_generate_fields_error_message(self, record_name: str) -> None:
             frameinfo = getframeinfo(currentframe())
 
@@ -255,11 +259,9 @@ def make_log_handler(
                 event=Event(
                     provider=provider_name,
                     dataset='ecs_tools_py',
-                    sequence=self._sequence_number
+                    sequence=self._get_sequence_number()
                 )
             ).to_dict()
-
-            self._sequence_number += 1
 
             message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
 
@@ -309,8 +311,7 @@ def make_log_handler(
                 )
             )
             ecs_log_entry_event.provider = self._provider_name
-            ecs_log_entry_event.sequence = self._sequence_number
-            self._sequence_number += 1
+            ecs_log_entry_event.sequence = self._get_sequence_number()
 
             # Set `event.dataset` to a proper value and determine the name of the namespace that will store extra data.
 
