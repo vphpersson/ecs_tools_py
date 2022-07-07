@@ -53,20 +53,20 @@ def url_entry_from_string(url: str, public_suffix_list_trie: PublicSuffixListTri
     query_key_value_pairs: list[tuple[str, str]] = parse_query_string(query_string=parsed_uri.query or '')
 
     return URL(
-        domain=parsed_uri.host,
-        extension=parsed_uri.extension,
-        fragment=parsed_uri.fragment,
+        domain=parsed_uri.host or None,
+        extension=parsed_uri.extension or None,
+        fragment=parsed_uri.fragment or None,
         full=url if (parsed_uri.scheme and parsed_uri.host) else None,
-        original=url,
-        password=parsed_uri.password,
-        path=parsed_uri.path,
-        port=parsed_uri.port,
-        query=parsed_uri.query,
-        registered_domain=parsed_uri.registered_domain,
-        scheme=parsed_uri.scheme,
-        subdomain=parsed_uri.subdomain,
-        top_level_domain=parsed_uri.top_level_domain,
-        username=parsed_uri.username,
+        original=url or None,
+        password=parsed_uri.password or None,
+        path=parsed_uri.path or None,
+        port=parsed_uri.port if parsed_uri.port is not None else None,
+        query=parsed_uri.query or None,
+        registered_domain=parsed_uri.registered_domain or None,
+        scheme=parsed_uri.scheme or None,
+        subdomain=parsed_uri.subdomain or None,
+        top_level_domain=parsed_uri.top_level_domain or None,
+        username=parsed_uri.username or None,
         query_keys=[key for key, _ in query_key_value_pairs] or None,
         query_values=[value for _, value in query_key_value_pairs] or None
     )
@@ -108,7 +108,7 @@ def user_agent_entry_from_string(
     return ecs_user_agent
 
 
-def entries_from_http_request(
+def entry_from_http_request(
     raw_request_line: bytes,
     raw_headers: bytes,
     raw_body: Optional[bytes],
@@ -117,7 +117,7 @@ def entries_from_http_request(
     public_suffix_list_trie: PublicSuffixListTrie | None = None
 ) -> Base:
     """
-    Produce ECS entries from the raw components of an HTTP request.
+    Produce a ECS Base entry from the raw components of an HTTP request.
 
     :param raw_request_line: The raw request line of an HTTP request.
     :param raw_headers: The raw headers of an HTTP request.
@@ -187,6 +187,7 @@ def entries_from_http_request(
             )
 
     return Base(
+        client=client_entry,
         http=Http(
             request=HttpRequest(
                 body=HttpRequestBody(
