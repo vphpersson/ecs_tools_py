@@ -1,9 +1,8 @@
 from re import sub as re_sub
-from urllib.parse import urlparse, parse_qsl, ParseResult
 from collections import defaultdict
 from gzip import decompress as gzip_decompress
 from datetime import datetime
-from typing import Final, Optional, Type, Sequence, TypeVar, cast, Any, Callable
+from typing import Final, Optional, Type, Sequence, TypeVar, cast, Any
 from re import compile as re_compile, Pattern as RePattern
 from logging import LogRecord, WARNING, ERROR, CRITICAL, Handler
 from pathlib import PurePath
@@ -13,12 +12,15 @@ from errno import errorcode
 from json import dumps as json_dumps
 from sys import exc_info as sys_exc_info
 from inspect import currentframe, getframeinfo
-from pathlib import Path
+from ipaddress import IPv4Address, IPv6Address
 
 from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, HttpRequest, \
-    HttpRequestBody, URL, UserAgent as ECSUserAgent, UserAgentDevice, OS
+    HttpRequestBody, URL, UserAgent as ECSUserAgent, UserAgentDevice, OS, Network, Client
 from psutil import boot_time as psutil_boot_time
 from string_utils_py import to_snake_case
+from http_lib.parse.uri import parse_uri, parse_query_string, ParsedURI
+from http_lib.parse.header.forwarded import parse_forwarded_header_value, NodeForwardedElement
+from public_suffix.structures.public_suffix_list_trie import PublicSuffixListTrie
 from user_agents import parse as user_agents_parse
 from user_agents.parsers import UserAgent
 from magic import from_buffer as magic_from_buffer
@@ -27,7 +29,6 @@ from ecs_tools_py.system import entry_from_system
 from ecs_tools_py.structures import SigningInformation
 
 _DT_TIMEZONE_PATTERN: Final[RePattern] = re_compile(pattern=r'^(.{3})(.{2}).*$')
-_NETLOC_PATTERN: Final[RePattern] = re_compile(pattern=r'^(?P<domain>[^:]+)(:(?P<port>[1-9][0-9]*))?$')
 
 # NOTE: May need to be maintained.
 _RESERVED_LOG_RECORD_KEYS: Final[set[str]] = {
@@ -37,55 +38,35 @@ _RESERVED_LOG_RECORD_KEYS: Final[set[str]] = {
 }
 
 
-def url_entry_from_string(url: str, parse_url: Optional[Callable[[str], Any]] = None) -> URL:
+def url_entry_from_string(url: str, public_suffix_list_trie: PublicSuffixListTrie | None = None) -> URL:
     """
     Produce an ECS URL entry from a URL string.
 
     :param url: An URL string from which to generate an ECS URL entry.
-    :param parse_url: A function that returns additional components that can be parsed from the URL.
+    :param public_suffix_list_trie: A Public Suffix List trie that enables additional parsing of the URL.
     :return: An ECS URL entry produced from a URL string.
     """
 
-    parsed_url: ParseResult = urlparse(url=url)
-
-    port: Optional[int] = None
-    domain: Optional[str] = None
-
-    if parsed_url.netloc and (match := _NETLOC_PATTERN.search(string=parsed_url.netloc)):
-        match_groupdict: dict[str, str] = match.groupdict()
-        port = int(match_port) if (match_port := match_groupdict.get('port')) else None
-        domain = match_groupdict['domain']
-
-    registered_domain: Optional[str] = None
-    subdomain: Optional[str] = None
-    top_level_domain: Optional[str] = None
-
-    if domain:
-        parsed_url_extra = parse_url(url)
-        registered_domain = getattr(parsed_url_extra, 'registered_domain', None)
-        subdomain = getattr(parsed_url_extra, 'subdomain', None)
-        top_level_domain = getattr(parsed_url_extra, 'top_level_domain', None)
+    parsed_uri: ParsedURI = parse_uri(uri_string=url, public_suffix_list_trie=public_suffix_list_trie)
 
     # NOTE: `query_keys` and `query_values` are non-standard.
-    query_key_value_pairs: list[tuple[str, str]] = parse_qsl(qs=(parsed_url.query or ''), keep_blank_values=True)
+    query_key_value_pairs: list[tuple[str, str]] = parse_query_string(query_string=parsed_uri.query or '')
 
     return URL(
-        domain=domain,
-        extension=(
-            (Path(re_sub(pattern=r'\?.+$', repl='', string=parsed_url.path)).suffix or '').removeprefix('.') or None
-        ),
-        fragment=parsed_url.fragment or None,
-        full=url if (parsed_url.scheme and parsed_url.netloc) else None,
+        domain=parsed_uri.host,
+        extension=parsed_uri.extension,
+        fragment=parsed_uri.fragment,
+        full=url if (parsed_uri.scheme and parsed_uri.host) else None,
         original=url,
-        password=parsed_url.password,
-        path=parsed_url.path,
-        port=port,
-        query=parsed_url.query or None,
-        registered_domain=registered_domain,
-        scheme=parsed_url.scheme if parsed_url.scheme else None,
-        subdomain=subdomain,
-        top_level_domain=top_level_domain,
-        username=parsed_url.username,
+        password=parsed_uri.password,
+        path=parsed_uri.path,
+        port=parsed_uri.port,
+        query=parsed_uri.query,
+        registered_domain=parsed_uri.registered_domain,
+        scheme=parsed_uri.scheme,
+        subdomain=parsed_uri.subdomain,
+        top_level_domain=parsed_uri.top_level_domain,
+        username=parsed_uri.username,
         query_keys=[key for key, _ in query_key_value_pairs] or None,
         query_values=[value for _, value in query_key_value_pairs] or None
     )
@@ -133,7 +114,7 @@ def entries_from_http_request(
     raw_body: Optional[bytes],
     use_forwarded_header: bool = False,
     include_decompressed_body: bool = False,
-    parse_url: Optional[Callable[[str], Any]] = None
+    public_suffix_list_trie: PublicSuffixListTrie | None = None
 ) -> Base:
     """
     Produce ECS entries from the raw components of an HTTP request.
@@ -143,7 +124,7 @@ def entries_from_http_request(
     :param raw_body: The raw body of an HTTP request.
     :param use_forwarded_header: Whether to parse the `Forwarded` HTTP header.
     :param include_decompressed_body: Whether to include a decompressed version of the body.
-    :param parse_url: A function that returns additional components that can be parsed from the URL path.
+    :param public_suffix_list_trie: A Public Suffix List trie, which enables additional parsing of the path.
     :return: ECS entries produced from the components of a raw HTTP request.
     """
 
@@ -151,12 +132,6 @@ def entries_from_http_request(
     path: bytes
     http_version_str: bytes
     method, path, http_version_str = raw_request_line.rstrip().split(b' ')
-
-    if use_forwarded_header:
-        # TODO: Parse the `Forwarded` header.
-        network_entry = None
-    else:
-        network_entry = None
 
     # TODO: Maybe this could be put somewhere else. Maybe a separate HTTP library?
     headers: dict[str, list[str]] = defaultdict(list)
@@ -170,6 +145,26 @@ def entries_from_http_request(
 
         name, value = header_line_bytes.split(sep=b': ', maxsplit=1)
         headers[name.decode().replace('-', '_').lower()].append(value.decode())
+
+    network_entry = Network()
+    client_entry = Client()
+
+    if use_forwarded_header and (forwarded_value_list := headers.get('forwarded')):
+        forwarded_elements: list[NodeForwardedElement] = parse_forwarded_header_value(
+            forwarded_value=next(iter(forwarded_value_list)),
+            use_node=True
+        )
+
+        if (first_forwarded_element := next(iter(forwarded_elements), None)) and first_forwarded_element.for_value:
+            for_host: str | IPv4Address | IPv6Address
+            for_port: int | None
+            for_host, for_port = first_forwarded_element.for_value
+
+            client_entry.port = for_port
+
+            if isinstance(for_host, (IPv4Address, IPv6Address)):
+                network_entry.forwarded_ip = str(for_host)
+                client_entry.ip = str(for_host)
 
     request_mime_type = magic_from_buffer(buffer=(raw_body or b''), mime=True).lower()
 
@@ -207,15 +202,15 @@ def entries_from_http_request(
                 ),
                 mime_type=request_mime_type if raw_body else None,
                 content_type_mime_type=[
-                   re_sub(pattern=r'; charset=.+$', repl='', string=content_type)
-                   for content_type in (headers.get('content_type') or [])
+                    re_sub(pattern=r'; charset=.+$', repl='', string=content_type)
+                    for content_type in (headers.get('content_type') or [])
                 ] or None,
                 method=method.decode().upper(),
                 referrer=headers.get('referer')
             ),
             version=http_version_str.removeprefix(b'HTTP/').decode()
         ),
-        url=url_entry_from_string(url=path.decode(), parse_url=parse_url),
+        url=url_entry_from_string(url=path.decode(), public_suffix_list_trie=public_suffix_list_trie),
         network=network_entry,
         user_agent=user_agent_entry_from_string(user_agent_string=headers.get('user-agent'))
     )
