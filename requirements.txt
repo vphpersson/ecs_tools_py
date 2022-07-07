@@ -1,5 +1,7 @@
 git+https://github.com/vphpersson/ecs_py.git#egg=ecs_py
 git+https://github.com/vphpersson/string_utils_py.git#egg=string_utils_py
+git+https://github.com/vphpersson/http_lib.git#egg=http_lib
+git+https://github.com/vphpersson/public_suffix.git#egg=public_suffix
 psutil
 user-agents
 ua-parser
