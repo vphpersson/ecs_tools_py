@@ -38,6 +38,36 @@ _RESERVED_LOG_RECORD_KEYS: Final[set[str]] = {
 }
 
 
+def merge_dict_entries(*entries: dict[str, Any]) -> dict[str, Any]:
+    """
+    Merge dictionary entries.
+
+    Later entries have precedence. Works recursively. A value will not be set if it is `None`.
+
+    :param entries: Entries to be merged.
+    :return: A merged dictionary entry.
+    """
+
+    master_entry: dict[str, Any] = entries[0]
+
+    if len(entries) == 1:
+        return master_entry
+
+    def merge(a: dict[str, Any], b: dict[str, Any]):
+        for key, b_value in b.items():
+            if isinstance(a_value := a.get(key), dict) and isinstance(b_value, dict):
+                merge(a_value, b_value)
+            elif b_value is not None:
+                a[key] = b_value
+
+        return a
+
+    for entry in entries[1:]:
+        merge(master_entry, entry)
+
+    return master_entry
+
+
 def url_entry_from_string(url: str, public_suffix_list_trie: PublicSuffixListTrie | None = None) -> URL:
     """
     Produce an ECS URL entry from a URL string.
@@ -525,7 +555,22 @@ def make_log_handler(
             # Populate a namespace with data provided in the `extra` parameter.
 
             if extra_keys := set(record.__dict__.keys()) - _RESERVED_LOG_RECORD_KEYS:
-                log_entry_dict[extra_data_namespace_name] = {key: record.__dict__[key] for key in extra_keys}
+
+                # (ECS Logger Handler options that can be passed in `extra`.)
+                merge_extra = False
+
+                try:
+                    options: dict[str, Any] = log_entry_dict.pop('_ecs_logger_handler_options')
+                    merge_extra = bool(options.get('merge_extra', None))
+                except KeyError:
+                    pass
+
+                extra_dict: dict[str, Any] = {key: record.__dict__[key] for key in extra_keys}
+
+                if merge_extra:
+                    log_entry_dict = merge_dict_entries(log_entry_dict, extra_dict)
+                else:
+                    log_entry_dict[extra_data_namespace_name] = extra_dict
 
             # Create the JSON-string representation of the log record's dictionary, which constitutes the log message.
 
