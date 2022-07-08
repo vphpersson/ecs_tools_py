@@ -556,16 +556,16 @@ def make_log_handler(
 
             if extra_keys := set(record.__dict__.keys()) - _RESERVED_LOG_RECORD_KEYS:
 
+                extra_dict: dict[str, Any] = {key: record.__dict__[key] for key in extra_keys}
+
                 # (ECS Logger Handler options that can be passed in `extra`.)
                 merge_extra = False
 
                 try:
-                    options: dict[str, Any] = log_entry_dict.pop('_ecs_logger_handler_options')
+                    options: dict[str, Any] = extra_dict.pop('_ecs_logger_handler_options')
                     merge_extra = bool(options.get('merge_extra', None))
                 except KeyError:
                     pass
-
-                extra_dict: dict[str, Any] = {key: record.__dict__[key] for key in extra_keys}
 
                 if merge_extra:
                     log_entry_dict = merge_dict_entries(log_entry_dict, extra_dict)
