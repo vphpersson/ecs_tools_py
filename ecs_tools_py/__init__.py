@@ -15,11 +15,12 @@ from inspect import currentframe, getframeinfo
 from ipaddress import IPv4Address, IPv6Address
 
 from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, HttpRequest, \
-    HttpRequestBody, URL, UserAgent as ECSUserAgent, UserAgentDevice, OS, Network, Client
+    HttpRequestBody, URL, UserAgent as ECSUserAgent, UserAgentDevice, OS, Network, Client, Server, Destination
 from psutil import boot_time as psutil_boot_time
 from string_utils_py import to_snake_case
 from http_lib.parse.uri import parse_uri, parse_query_string, ParsedURI
-from http_lib.parse.header.forwarded import parse_forwarded_header_value, NodeForwardedElement
+from http_lib.parse.header.forwarded import parse_forwarded_header_value, ParameterParsedForwardedElement
+from http_lib.parse.host import parse_host, IPvFutureString
 from public_suffix.structures.public_suffix_list_trie import PublicSuffixListTrie
 from user_agents import parse as user_agents_parse
 from user_agents.parsers import UserAgent
@@ -142,6 +143,7 @@ def entry_from_http_request(
     raw_request_line: bytes,
     raw_headers: bytes,
     raw_body: Optional[bytes],
+    use_host_header: bool = False,
     use_forwarded_header: bool = False,
     include_decompressed_body: bool = False,
     public_suffix_list_trie: PublicSuffixListTrie | None = None
@@ -153,6 +155,7 @@ def entry_from_http_request(
     :param raw_headers: The raw headers of an HTTP request.
     :param raw_body: The raw body of an HTTP request.
     :param use_forwarded_header: Whether to parse the `Forwarded` HTTP header.
+    :param use_host_header: Whether to parse the `Host` HTTP header.
     :param include_decompressed_body: Whether to include a decompressed version of the body.
     :param public_suffix_list_trie: A Public Suffix List trie, which enables additional parsing of the path.
     :return: ECS entries produced from the components of a raw HTTP request.
@@ -176,25 +179,50 @@ def entry_from_http_request(
         name, value = header_line_bytes.split(sep=b': ', maxsplit=1)
         headers[name.decode().replace('-', '_').lower()].append(value.decode())
 
-    network_entry = Network()
-    client_entry = Client()
+    network_entry: Network | None = None
+    client_entry: Client | None = None
+    server_entry: Server | None = None
+    destination_entry: Destination | None = None
 
+    # TODO: Put in separate function. (Let the caller specify the destination type `Destination` / `Server`)
+    if use_host_header and (host_header_value := headers.get('host')):
+        host_name: str | IPvFutureString | IPv4Address | IPv6Address
+        host_port: int | None
+        host_name, host_port = parse_host(host_value=next(iter(host_header_value)))
+
+        destination_entry = Destination(address=str(host_name), port=host_port)
+
+        if isinstance(host_name, (IPv4Address, IPv6Address)):
+            destination_entry.ip = destination_entry.address
+
+    # TODO: Put in separate function. (Let the caller specify the source and destination types.)
     if use_forwarded_header and (forwarded_value_list := headers.get('forwarded')):
-        forwarded_elements: list[NodeForwardedElement] = parse_forwarded_header_value(
+        forwarded_elements: list[ParameterParsedForwardedElement] = parse_forwarded_header_value(
             forwarded_value=next(iter(forwarded_value_list)),
-            use_node=True
+            parse_parameter_values=True
         )
 
-        if (first_forwarded_element := next(iter(forwarded_elements), None)) and first_forwarded_element.for_value:
-            for_host: str | IPv4Address | IPv6Address
-            for_port: int | None
-            for_host, for_port = first_forwarded_element.for_value
+        if first_forwarded_element := next(iter(forwarded_elements), None):
+            if for_value := first_forwarded_element.for_value:
+                for_host: str | IPv4Address | IPv6Address
+                for_port: int | None
+                for_host, for_port = for_value
 
-            client_entry.port = for_port
+                client_entry = Client(address=str(for_host), port=for_port)
 
-            if isinstance(for_host, (IPv4Address, IPv6Address)):
-                network_entry.forwarded_ip = str(for_host)
-                client_entry.ip = str(for_host)
+                if isinstance(for_host, (IPv4Address, IPv6Address)):
+                    client_entry.ip = client_entry.address
+                    network_entry = Network(forwarded_ip=client_entry.address)
+
+            if host_value := first_forwarded_element.host_value:
+                host_name: str | IPvFutureString | IPv4Address | IPv6Address
+                host_port: int | None
+                host_name, host_port = host_value
+
+                server_entry = Server(address=str(host_name), port=host_port)
+
+                if isinstance(host_name, (IPv4Address, IPv6Address)):
+                    server_entry.ip = server_entry.address
 
     request_mime_type = magic_from_buffer(buffer=(raw_body or b''), mime=True).lower()
 
@@ -218,6 +246,7 @@ def entry_from_http_request(
 
     return Base(
         client=client_entry,
+        destination=destination_entry,
         http=Http(
             request=HttpRequest(
                 body=HttpRequestBody(
@@ -241,8 +270,9 @@ def entry_from_http_request(
             ),
             version=http_version_str.removeprefix(b'HTTP/').decode()
         ),
-        url=url_entry_from_string(url=path.decode(), public_suffix_list_trie=public_suffix_list_trie),
         network=network_entry,
+        server=server_entry,
+        url=url_entry_from_string(url=path.decode(), public_suffix_list_trie=public_suffix_list_trie),
         user_agent=user_agent_entry_from_string(user_agent_string=headers.get('user-agent'))
     )
 
