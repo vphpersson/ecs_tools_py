@@ -15,7 +15,7 @@ from inspect import currentframe, getframeinfo
 from ipaddress import IPv4Address, IPv6Address
 
 from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, HttpRequest, \
-    HttpRequestBody, URL, UserAgent as ECSUserAgent, UserAgentDevice, OS, Network, Client, Server, Destination
+    HttpRequestBody, URL, UserAgent as ECSUserAgent, UserAgentDevice, OS, Network, Client, Server, Destination, Source
 from psutil import boot_time as psutil_boot_time
 from string_utils_py import to_snake_case
 from http_lib.parse.uri import parse_uri, parse_query_string, ParsedURI
@@ -103,6 +103,86 @@ def url_entry_from_string(url: str, public_suffix_list_trie: PublicSuffixListTri
     )
 
 
+_ECS_DESTINATION_SERVER_TYPE = TypeVar('_ECS_DESTINATION_SERVER_TYPE', bound=Type[Destination | Server])
+_ECS_SOURCE_CLIENT_TYPE = TypeVar('_ECS_SOURCE_CLIENT_TYPE', bound=Type[Source | Client])
+
+
+def entry_from_host_header_value(
+    host_header_value: str,
+    entry_type: Type[_ECS_DESTINATION_SERVER_TYPE]
+) -> _ECS_DESTINATION_SERVER_TYPE:
+    """
+    Produce either a `Destination` or `Server` ECS entry from the `Host` HTTP header value.
+
+    :param host_header_value: The `Host` HTTP header value to parse.
+    :param entry_type: The type of ECS entry to populate with parsed values.
+    :return: An ECS entry populated with parsed values.
+    """
+
+    host_name: str | IPvFutureString | IPv4Address | IPv6Address
+    host_port: int | None
+    host_name, host_port = parse_host(host_value=host_header_value)
+
+    ecs_entry: _ECS_DESTINATION_SERVER_TYPE = entry_type(address=str(host_name), port=host_port)
+
+    if isinstance(host_name, (IPv4Address, IPv6Address)):
+        ecs_entry.ip = ecs_entry.address
+
+    return ecs_entry
+
+
+def entries_from_forwarded_header_value(
+    forwarded_header_value: str,
+    entry_type_for: Type[_ECS_SOURCE_CLIENT_TYPE],
+    entry_type_host: Type[_ECS_DESTINATION_SERVER_TYPE]
+) -> tuple[_ECS_SOURCE_CLIENT_TYPE | None, _ECS_DESTINATION_SERVER_TYPE | None]:
+    """
+    Produce a pair of ECS entries from a `Forwarded` HTTP header value.
+
+    Only the first forwarded element is parsed.
+
+    :param forwarded_header_value: A `Forwarded` HTTP header value to be parsed.
+    :param entry_type_for: The type of ECS entry to be populated with values parsed from the "for" value.
+    :param entry_type_host: The type of ECS entry to be populated with values parsed from the "host" value.
+    :return: A pair of ECS entries populated with parsed values.
+    """
+
+    forwarded_elements: list[ParameterParsedForwardedElement] = parse_forwarded_header_value(
+        forwarded_value=forwarded_header_value,
+        parse_parameter_values=True
+    )
+
+    first_forwarded_element = next(iter(forwarded_elements), None)
+    if not first_forwarded_element:
+        raise ValueError('There are no elements in the provided `Forwarded` value.')
+
+    ecs_entry_for: _ECS_SOURCE_CLIENT_TYPE | None = None
+
+    if for_value := first_forwarded_element.for_value:
+        for_host: str | IPv4Address | IPv6Address
+        for_port: int | None
+        for_host, for_port = for_value
+
+        ecs_entry_for = entry_type_for(address=str(for_host), port=for_port)
+
+        if isinstance(for_host, (IPv4Address, IPv6Address)):
+            ecs_entry_for.ip = ecs_entry_for.address
+
+    ecs_entry_host: _ECS_DESTINATION_SERVER_TYPE | None = None
+
+    if host_value := first_forwarded_element.host_value:
+        host_name: str | IPvFutureString | IPv4Address | IPv6Address
+        host_port: int | None
+        host_name, host_port = host_value
+
+        ecs_entry_host = entry_type_host(address=str(host_name), port=host_port)
+
+        if isinstance(host_name, (IPv4Address, IPv6Address)):
+            ecs_entry_host.ip = ecs_entry_host.address
+
+    return ecs_entry_for, ecs_entry_host
+
+
 def user_agent_entry_from_string(
     user_agent_string: Optional[str],
     raise_exception: bool = False
@@ -149,7 +229,7 @@ def entry_from_http_request(
     public_suffix_list_trie: PublicSuffixListTrie | None = None
 ) -> Base:
     """
-    Produce a ECS Base entry from the raw components of an HTTP request.
+    Produce an ECS Base entry from the raw components of an HTTP request.
 
     :param raw_request_line: The raw request line of an HTTP request.
     :param raw_headers: The raw headers of an HTTP request.
@@ -184,45 +264,21 @@ def entry_from_http_request(
     server_entry: Server | None = None
     destination_entry: Destination | None = None
 
-    # TODO: Put in separate function. (Let the caller specify the destination type `Destination` / `Server`)
-    if use_host_header and (host_header_value := headers.get('host')):
-        host_name: str | IPvFutureString | IPv4Address | IPv6Address
-        host_port: int | None
-        host_name, host_port = parse_host(host_value=next(iter(host_header_value)))
-
-        destination_entry = Destination(address=str(host_name), port=host_port)
-
-        if isinstance(host_name, (IPv4Address, IPv6Address)):
-            destination_entry.ip = destination_entry.address
-
-    # TODO: Put in separate function. (Let the caller specify the source and destination types.)
-    if use_forwarded_header and (forwarded_value_list := headers.get('forwarded')):
-        forwarded_elements: list[ParameterParsedForwardedElement] = parse_forwarded_header_value(
-            forwarded_value=next(iter(forwarded_value_list)),
-            parse_parameter_values=True
+    if use_host_header and (host_header_value := next(iter(headers.get('host', [])), None)):
+        destination_entry: Destination = entry_from_host_header_value(
+            host_header_value=host_header_value,
+            entry_type=Destination
         )
 
-        if first_forwarded_element := next(iter(forwarded_elements), None):
-            if for_value := first_forwarded_element.for_value:
-                for_host: str | IPv4Address | IPv6Address
-                for_port: int | None
-                for_host, for_port = for_value
+    if use_forwarded_header and (forwarded_value := next(iter(headers.get('forwarded', [])), None)):
+        client_entry, server_entry = entries_from_forwarded_header_value(
+            forwarded_header_value=forwarded_value,
+            entry_type_for=Client,
+            entry_type_host=Server
+        )
 
-                client_entry = Client(address=str(for_host), port=for_port)
-
-                if isinstance(for_host, (IPv4Address, IPv6Address)):
-                    client_entry.ip = client_entry.address
-                    network_entry = Network(forwarded_ip=client_entry.address)
-
-            if host_value := first_forwarded_element.host_value:
-                host_name: str | IPvFutureString | IPv4Address | IPv6Address
-                host_port: int | None
-                host_name, host_port = host_value
-
-                server_entry = Server(address=str(host_name), port=host_port)
-
-                if isinstance(host_name, (IPv4Address, IPv6Address)):
-                    server_entry.ip = server_entry.address
+        if client_entry:
+            network_entry = Network(forwarded_ip=client_entry.address)
 
     request_mime_type = magic_from_buffer(buffer=(raw_body or b''), mime=True).lower()
 
