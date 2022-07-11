@@ -13,6 +13,7 @@ from json import dumps as json_dumps
 from sys import exc_info as sys_exc_info
 from inspect import currentframe, getframeinfo
 from ipaddress import IPv4Address, IPv6Address
+from socket import socket as socket_class, SocketKind, AddressFamily
 
 from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, HttpRequest, \
     HttpRequestBody, URL, UserAgent as ECSUserAgent, UserAgentDevice, OS, Network, Client, Server, Destination, Source
@@ -67,6 +68,39 @@ def merge_dict_entries(*entries: dict[str, Any]) -> dict[str, Any]:
         merge(master_entry, entry)
 
     return master_entry
+
+
+def network_entry_from_socket(socket: socket_class) -> Network:
+    """
+    Produce an ECS Network entry from a socket.
+
+    :param socket: A socket from which to produce information for the ECS entry.
+    :return: An ECS Network entry with information produced from a socket.
+    """
+
+    network_iana_number = socket.proto
+
+    match socket.family:
+        case AddressFamily.AF_INET:
+            network_type = 'ipv4'
+        case AddressFamily.AF_INET6:
+            network_type = 'ipv6'
+        case _:
+            network_type = None
+
+    match socket.type:
+        case SocketKind.SOCK_STREAM:
+            network_transport = 'tcp'
+        case SocketKind.SOCK_DGRAM:
+            network_transport = 'udp'
+        case _:
+            network_transport = None
+
+    return Network(
+        iana_number=str(network_iana_number),
+        type=network_type,
+        transport=network_transport
+    )
 
 
 def url_entry_from_string(url: str, public_suffix_list_trie: PublicSuffixListTrie | None = None) -> URL:
@@ -649,7 +683,7 @@ def make_log_handler(
 
                 try:
                     options: dict[str, Any] = extra_dict.pop('_ecs_logger_handler_options')
-                    merge_extra = bool(options.get('merge_extra', None))
+                    merge_extra = bool(options.get('merge_extra'))
                 except KeyError:
                     pass
 
