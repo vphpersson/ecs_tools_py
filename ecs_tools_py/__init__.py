@@ -1,6 +1,4 @@
-from re import sub as re_sub
 from collections import defaultdict
-from gzip import decompress as gzip_decompress
 from datetime import datetime
 from typing import Final, Optional, Type, Sequence, TypeVar, cast, Any
 from re import compile as re_compile, Pattern as RePattern
@@ -14,14 +12,21 @@ from sys import exc_info as sys_exc_info
 from inspect import currentframe, getframeinfo
 from ipaddress import IPv4Address, IPv6Address
 from socket import socket as socket_class, SocketKind, AddressFamily
+from dataclasses import fields as dataclasses_fields
+from itertools import chain
 
-from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, HttpRequest, \
-    HttpRequestBody, URL, UserAgent as ECSUserAgent, UserAgentDevice, OS, Network, Client, Server, Destination, Source
+
+from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, \
+    HttpRequest as ECSHttpRequest, HttpResponse as ECSHttpResponse, HttpBody, URL, UserAgent as ECSUserAgent, \
+    UserAgentDevice, OS, Network, Client, Server, Destination, Source, ECSEntry
 from psutil import boot_time as psutil_boot_time
 from string_utils_py import to_snake_case
+from http_lib.structures.message import Message as HTTPMessage, Request as HTTPRequest, Response as HTTPResponse
 from http_lib.parse.uri import parse_uri, parse_query_string, ParsedURI
 from http_lib.parse.header.forwarded import parse_forwarded_header_value, ParameterParsedForwardedElement
+from http_lib.parse.header.content_type import parse_content_type
 from http_lib.parse.host import parse_host, IPvFutureString
+from http_lib.parse.content import decompress_body
 from public_suffix.structures.public_suffix_list_trie import PublicSuffixListTrie
 from user_agents import parse as user_agents_parse
 from user_agents.parsers import UserAgent
@@ -55,12 +60,42 @@ def merge_dict_entries(*entries: dict[str, Any]) -> dict[str, Any]:
     if len(entries) == 1:
         return master_entry
 
-    def merge(a: dict[str, Any], b: dict[str, Any]):
+    def merge(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
         for key, b_value in b.items():
             if isinstance(a_value := a.get(key), dict) and isinstance(b_value, dict):
                 merge(a_value, b_value)
             elif b_value is not None:
                 a[key] = b_value
+
+        return a
+
+    for entry in entries[1:]:
+        merge(master_entry, entry)
+
+    return master_entry
+
+
+_ENTRY_TYPE = TypeVar('_ENTRY_TYPE', bound=ECSEntry)
+
+
+def merge_ecs_entries(*entries: _ENTRY_TYPE) -> _ENTRY_TYPE:
+
+    master_entry: ECSEntry = entries[0]
+    if len(entries) == 1:
+        return master_entry
+
+    def merge(a: _ENTRY_TYPE, b: _ENTRY_TYPE) -> _ENTRY_TYPE:
+
+        if (a_type := type(a)) is not (b_type := type(b)):
+            raise ValueError(f'The ECS entry types are not the same: "{a_type}", "{b_type}"')
+
+        b_key_value_pairs = tuple((field.name, getattr(b, field.name)) for field in dataclasses_fields(b))
+
+        for key, b_value in b_key_value_pairs:
+            if isinstance(a_value := getattr(a, key, None), ECSEntry) and isinstance(b_value, ECSEntry):
+                merge(a_value, b_value)
+            elif b_value is not None:
+                setattr(a, key, b_value)
 
         return a
 
@@ -218,9 +253,9 @@ def entries_from_forwarded_header_value(
 
 
 def user_agent_entry_from_string(
-    user_agent_string: Optional[str],
+    user_agent_string: str,
     raise_exception: bool = False
-) -> Optional[ECSUserAgent]:
+) -> ECSUserAgent | None:
     """
     Produce an ECS UserAgent entry from a user agent string.
 
@@ -247,123 +282,131 @@ def user_agent_entry_from_string(
         ecs_user_agent.os = OS(
             family=user_agent.os.family,
             version=user_agent.os.version_string
-        )
+        ) if user_agent.os.family != 'Other' else None
         ecs_user_agent.version = user_agent.browser.version_string
 
     return ecs_user_agent
 
 
-def entry_from_http_request(
-    raw_request_line: bytes,
-    raw_headers: bytes,
-    raw_body: Optional[bytes],
+def entry_from_http_message(
+    http_message: HTTPMessage,
+    include_decompressed_body: bool = False,
     use_host_header: bool = False,
     use_forwarded_header: bool = False,
-    include_decompressed_body: bool = False,
     public_suffix_list_trie: PublicSuffixListTrie | None = None
 ) -> Base:
     """
-    Produce an ECS Base entry from the raw components of an HTTP request.
+    Produce an entry from an HTTP message.
 
-    :param raw_request_line: The raw request line of an HTTP request.
-    :param raw_headers: The raw headers of an HTTP request.
-    :param raw_body: The raw body of an HTTP request.
+    :param http_message: An HTTP message from which to produce an entry.
+    :param include_decompressed_body: Whether to include a decompressed version of the body.
     :param use_forwarded_header: Whether to parse the `Forwarded` HTTP header.
     :param use_host_header: Whether to parse the `Host` HTTP header.
-    :param include_decompressed_body: Whether to include a decompressed version of the body.
-    :param public_suffix_list_trie: A Public Suffix List trie, which enables additional parsing of the path.
-    :return: ECS entries produced from the components of a raw HTTP request.
+    :param public_suffix_list_trie: A Public Suffix List trie with which to obtain extra attributes about an HTTP
+        request's path.
+    :return:
     """
 
-    method: bytes
-    path: bytes
-    http_version_str: bytes
-    method, path, http_version_str = raw_request_line.rstrip().split(b' ')
-
-    # TODO: Maybe this could be put somewhere else. Maybe a separate HTTP library?
     headers: dict[str, list[str]] = defaultdict(list)
-    for header_line_bytes in raw_headers.splitlines():
-        header_line_bytes = header_line_bytes.rstrip()
-        if not header_line_bytes:
-            break
+    for name, value in http_message.headers:
+        headers[name.replace('-', '_').lower()].append(value)
+    headers = dict(headers)
 
-        name: bytes
-        value: bytes
+    content_type: str | None = (
+        media_type.full_type
+        if (media_type := parse_content_type(content_type_value=next(iter(headers.get('content_type', [])), '')))
+        else None
+    )
 
-        name, value = header_line_bytes.split(sep=b': ', maxsplit=1)
-        headers[name.decode().replace('-', '_').lower()].append(value.decode())
+    decompressed_body: bytes | None = None
+    body_mime_type: str | None = None
+    include_body = False
+    if http_message.body:
+        body_mime_type: str = magic_from_buffer(buffer=http_message.body, mime=True).lower()
+        include_body = 'octet-stream' not in body_mime_type
+
+        if include_decompressed_body and (decompressed_body := decompress_body(body=http_message.body, mime_type=body_mime_type)):
+            decompressed_body_mime_type: str = magic_from_buffer(buffer=decompressed_body, mime=True).lower()
+            include_decompressed_body = include_decompressed_body and 'octet-stream' not in decompressed_body_mime_type
 
     network_entry: Network | None = None
     client_entry: Client | None = None
     server_entry: Server | None = None
     destination_entry: Destination | None = None
+    url_entry: URL | None = None
+    user_agent_entry: ECSUserAgent | None = None
 
-    if use_host_header and (host_header_value := next(iter(headers.get('host', [])), None)):
-        destination_entry: Destination = entry_from_host_header_value(
-            host_header_value=host_header_value,
-            entry_type=Destination
-        )
+    ecs_http_message_kwargs = dict(
+        headers=headers or None,
+        body=HttpBody(
+            bytes=len(http_message.body),
+            content=http_message.body if include_body else None,
+            decompressed_content=decompressed_body if include_decompressed_body else None
+        ),
+        bytes=len(http_message.raw) if http_message.raw else None,
+        mime_type=body_mime_type or None,
+        content_type=content_type
+    )
 
-    if use_forwarded_header and (forwarded_value := next(iter(headers.get('forwarded', [])), None)):
-        client_entry, server_entry = entries_from_forwarded_header_value(
-            forwarded_header_value=forwarded_value,
-            entry_type_for=Client,
-            entry_type_host=Server
-        )
-
-        if client_entry:
-            network_entry = Network(forwarded_ip=client_entry.address)
-
-    request_mime_type = magic_from_buffer(buffer=(raw_body or b''), mime=True).lower()
-
-    include_request_content: bool = 'octet-stream' not in (request_mime_type or '')
-
-    decompressed_request_content: bytes = b''
-    if request_mime_type == 'application/gzip':
-        try:
-            decompressed_request_content: bytes = gzip_decompress(data=raw_body)
-        except:
-            pass
-        else:
-            decompressed_request_content_mime_type = magic_from_buffer(
-                buffer=(decompressed_request_content or b''),
-                mime=True
-            ).lower()
-
-            include_decompressed_body = (
-                include_decompressed_body and 'octet-stream' not in (decompressed_request_content_mime_type or '')
+    if isinstance(http_message, HTTPRequest):
+        if use_host_header and (host_header_value := next(iter(headers.get('host', [])), None)):
+            destination_entry: Destination = entry_from_host_header_value(
+                host_header_value=host_header_value,
+                entry_type=Destination
             )
+
+        if use_forwarded_header and (forwarded_value := next(iter(headers.get('forwarded', [])), None)):
+            client_entry, server_entry = entries_from_forwarded_header_value(
+                forwarded_header_value=forwarded_value,
+                entry_type_for=Client,
+                entry_type_host=Server
+            )
+
+            if client_entry:
+                network_entry = Network(forwarded_ip=client_entry.address)
+
+        if http_message.request_line:
+            url_entry: URL = url_entry_from_string(
+                url=http_message.request_line.request_target,
+                public_suffix_list_trie=public_suffix_list_trie
+            )
+
+        user_agent_entry = user_agent_entry_from_string(user_agent_string=next(iter(headers.get('user_agent', [])), ''))
+
+        http_entry = Http(
+            request=ECSHttpRequest(
+                **ecs_http_message_kwargs,
+                method=http_message.request_line.method if http_message.request_line else None,
+                referrer=next(iter(headers.get('referer', [])), ''),
+            ),
+            version=(
+                (http_message.request_line.http_version or '').removeprefix('HTTP/')
+                if http_message.request_line else None
+            ) or None
+        )
+    elif isinstance(http_message, HTTPResponse):
+        http_entry = Http(
+            response=ECSHttpResponse(
+                **ecs_http_message_kwargs,
+                status_code=http_message.status_line.status_code if http_message.status_line else None,
+                reason_phrase=http_message.status_line.reason_phrase if http_message.status_line else None
+            ),
+            version=(
+                (http_message.status_line.http_version or '').removeprefix('HTTP/')
+                if http_message.status_line else None
+            ) or None
+        )
+    else:
+        raise ValueError(f'Unexpected HTTP Message type: {http_message}')
 
     return Base(
         client=client_entry,
         destination=destination_entry,
-        http=Http(
-            request=HttpRequest(
-                body=HttpRequestBody(
-                    bytes=(len(raw_body) if raw_body is not None else 0),
-                    content=raw_body.decode() if include_request_content else None,
-                    decompressed_content=(
-                        decompressed_request_content.decode(encoding='utf-8', errors='surrogateescape') or None
-                    ) if include_decompressed_body else None
-                ),
-                headers=dict(headers) or None,
-                bytes=(
-                    len(raw_headers) + (len(raw_body) if raw_body is not None else 0)
-                ),
-                mime_type=request_mime_type if raw_body else None,
-                content_type_mime_type=[
-                    re_sub(pattern=r'; charset=.+$', repl='', string=content_type)
-                    for content_type in (headers.get('content_type') or [])
-                ] or None,
-                method=method.decode().upper(),
-                referrer=headers.get('referer')
-            ),
-            version=http_version_str.removeprefix(b'HTTP/').decode()
-        ),
+        http=http_entry,
         network=network_entry,
         server=server_entry,
-        url=url_entry_from_string(url=path.decode(), public_suffix_list_trie=public_suffix_list_trie),
-        user_agent=user_agent_entry_from_string(user_agent_string=headers.get('user-agent'))
+        url=url_entry,
+        user_agent=user_agent_entry
     )
 
 
