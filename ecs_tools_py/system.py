@@ -5,7 +5,7 @@ from sys import orig_argv as sys_orig_argv
 from platform import release as platform_release, system as platform_system, machine as platform_machine
 from functools import cache
 from collections import defaultdict
-from dataclasses import fields as dataclasses_fields, astuple
+from dataclasses import fields as dataclasses_fields
 from os import getcwd as os_getcwd, getppid as os_getppid, getpid as os_getpid
 from shlex import join as shlex_join
 from pathlib import PurePath
@@ -270,7 +270,7 @@ def entry_from_system(field_names: Optional[Sequence[str]] = None) -> Base:
                 )
                 namespace_stack.pop()
 
-                if any(value is not None for value in astuple(entry_class_field_storage)):
+                if any(getattr(entry_class_field_storage, field.name) is not None for field in dataclasses_fields(entry_class_field_storage)):
                     setattr(namespace_storage, entry_class_field.name, entry_class_field_storage)
             else:
                 # TODO: Change error name.
