@@ -337,7 +337,7 @@ def entry_from_http_message(
     ecs_http_message_kwargs = dict(
         headers=headers or None,
         body=HttpBody(
-            bytes=len(http_message.body),
+            bytes=len(http_message.body) if http_message.body else None,
             content=http_message.body if include_body else None,
             decompressed_content=decompressed_body if include_decompressed_body else None
         ),
