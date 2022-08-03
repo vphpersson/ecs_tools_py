@@ -13,8 +13,6 @@ from inspect import currentframe, getframeinfo
 from ipaddress import IPv4Address, IPv6Address
 from socket import socket as socket_class, SocketKind, AddressFamily
 from dataclasses import fields as dataclasses_fields
-from itertools import chain
-
 
 from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, \
     HttpRequest as ECSHttpRequest, HttpResponse as ECSHttpResponse, HttpBody, URL, UserAgent as ECSUserAgent, \
@@ -322,10 +320,10 @@ def entry_from_http_message(
     body_mime_type: str | None = None
     include_body = False
     if http_message.body:
-        body_mime_type: str = magic_from_buffer(buffer=http_message.body, mime=True).lower()
+        body_mime_type: str = magic_from_buffer(buffer=http_message.body.tobytes(), mime=True).lower()
         include_body = 'octet-stream' not in body_mime_type
 
-        if include_decompressed_body and (decompressed_body := decompress_body(body=http_message.body, mime_type=body_mime_type)):
+        if include_decompressed_body and (decompressed_body := decompress_body(body=http_message.body.tobytes(), mime_type=body_mime_type)):
             decompressed_body_mime_type: str = magic_from_buffer(buffer=decompressed_body, mime=True).lower()
             include_decompressed_body = include_decompressed_body and 'octet-stream' not in decompressed_body_mime_type
 
