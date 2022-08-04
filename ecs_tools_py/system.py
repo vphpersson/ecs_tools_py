@@ -1,5 +1,5 @@
 from logging import getLogger, Logger
-from typing import Optional, Final, Callable, Any, Sequence
+from typing import Final, Callable, Any, Sequence
 from socket import gethostname as socket_gethostname, getfqdn as socket_getfqdn
 from sys import orig_argv as sys_orig_argv
 from platform import release as platform_release, system as platform_system, machine as platform_machine
@@ -28,7 +28,7 @@ _OPTIONAL_TYPE_PATTERN: Final[RePattern] = re_compile(pattern=r'^Optional\[([^]]
 
 
 @cache
-def make_host_architecture() -> Optional[str]:
+def make_host_architecture() -> str | None:
     return platform_machine() or None
 
 
@@ -46,12 +46,12 @@ def make_host_name() -> str:
 
 
 @cache
-def make_os_kernel() -> Optional[str]:
+def make_os_kernel() -> str | None:
     return platform_release() or None
 
 
 @cache
-def make_os_type() -> Optional[str]:
+def make_os_type() -> str | None:
     return system.lower() if (system := platform_system()) else None
 
 # process
@@ -82,7 +82,7 @@ def make_process_parent_pid() -> int:
     return os_getppid()
 
 
-def make_process_user_name() -> Optional[str]:
+def make_process_user_name() -> str | None:
     process_user_name = PsutilProcess().username()
 
     try:
@@ -95,7 +95,7 @@ def make_process_user_name() -> Optional[str]:
     return process_user_name
 
 
-def make_process_user_id() -> Optional[str]:
+def make_process_user_id() -> str | None:
     try:
         from os import getuid
         return str(getuid())
@@ -103,7 +103,7 @@ def make_process_user_id() -> Optional[str]:
         return None
 
 
-def make_process_user_effective_name() -> Optional[str]:
+def make_process_user_effective_name() -> str | None:
     try:
         from pwd import getpwuid
         return getpwuid(PsutilProcess().uids().effective).pw_name
@@ -111,7 +111,7 @@ def make_process_user_effective_name() -> Optional[str]:
         return None
 
 
-def make_process_user_effective_id() -> Optional[str]:
+def make_process_user_effective_id() -> str | None:
     try:
         from os import geteuid
         return str(geteuid())
@@ -119,7 +119,7 @@ def make_process_user_effective_id() -> Optional[str]:
         return None
 
 
-def make_process_group_id() -> Optional[str]:
+def make_process_group_id() -> str | None:
     try:
         from os import getgid
 
@@ -128,7 +128,7 @@ def make_process_group_id() -> Optional[str]:
         return None
 
 
-def make_process_group_name() -> Optional[str]:
+def make_process_group_name() -> str | None:
     try:
         from os import getgid
         from grp import getgrgid
@@ -138,7 +138,7 @@ def make_process_group_name() -> Optional[str]:
         return None
 
 
-def make_process_group_effective_id() -> Optional[str]:
+def make_process_group_effective_id() -> str | None:
     try:
         from os import getegid
 
@@ -147,7 +147,7 @@ def make_process_group_effective_id() -> Optional[str]:
         return None
 
 
-def make_progress_group_effective_name() -> Optional[str]:
+def make_progress_group_effective_name() -> str | None:
     try:
         from os import getegid
         from grp import getgrgid
@@ -169,7 +169,7 @@ def derive_process_name(executable: str) -> str:
     return PurePath(executable).name
 
 
-FIELD_TO_MAKE_FUNCTION: Final[dict[str, Optional[Callable[[], Any]]]] = {
+FIELD_TO_MAKE_FUNCTION: Final[dict[str, Callable[[], Any] | None]] = {
     'host.architecture': make_host_architecture,
     'host.hostname': make_host_hostname,
     'host.name': make_host_name,
@@ -197,7 +197,7 @@ FIELD_TO_MAKE_FUNCTION: Final[dict[str, Optional[Callable[[], Any]]]] = {
 SUPPORTED_FIELD_NAMES: Final[set[str]] = set(FIELD_TO_MAKE_FUNCTION.keys())
 
 
-def entry_from_system(field_names: Optional[Sequence[str]] = None) -> Base:
+def entry_from_system(field_names: Sequence[str | None] = None) -> Base:
     """
     Produce an ECS `Base` entry from information that can be gathered from the system.
 
