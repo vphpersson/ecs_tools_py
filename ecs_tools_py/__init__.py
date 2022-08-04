@@ -1,6 +1,6 @@
 from collections import defaultdict
 from datetime import datetime
-from typing import Final, Optional, Type, Sequence, TypeVar, cast, Any
+from typing import Final, Type, Sequence, TypeVar, cast, Any
 from re import compile as re_compile, Pattern as RePattern
 from logging import LogRecord, WARNING, ERROR, CRITICAL, Handler
 from pathlib import PurePath
@@ -436,11 +436,11 @@ def error_entry_from_exc_info(exc_info) -> Error:
         message=str(exception_value),
         stack_trace=dedent(''.join(format_tb(exception_traceback))).rstrip(),
         type=f'{exception_type.__module__}.{exception_type.__qualname__}',
-        id=errorcode[errno_code] if (errno_code := getattr(exception_value, 'errno', None)) is not None else None
+        id=errorcode.get(errno_code) if (errno_code := getattr(exception_value, 'errno', None)) is not None else None
     )
 
 
-def entry_from_log_record(record: LogRecord, field_names: Optional[Sequence[str]] = None) -> Base:
+def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None = None) -> Base:
     """
     Produce an ECS `Base` entry from a log record.
 
@@ -555,10 +555,10 @@ _T = TypeVar('_T', bound=Handler)
 
 def make_log_handler(
     base_class: Type[_T],
-    generate_field_names: Optional[Sequence[str]] = None,
-    provider_name: Optional[str] = None,
-    main_dataset_fallback: Optional[str] = None,
-    signing_information: Optional[SigningInformation] = None
+    generate_field_names: Sequence[str] | None = None,
+    provider_name: str | None = None,
+    main_dataset_fallback: str | None = None,
+    signing_information: SigningInformation | None = None
 ) -> Type[_T]:
     """
     Create a log handler that inherits from the provided base class and emits records in the ECS format.
