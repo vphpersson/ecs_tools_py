@@ -533,8 +533,12 @@ def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None =
 def _dumps_function(obj: Any):
     if isinstance(obj, datetime):
         return obj.isoformat()
+    elif isinstance(obj, bytes):
+        return obj.decode()
+    elif isinstance(obj, memoryview):
+        return obj.tobytes().decode()
 
-    raise TypeError
+    raise TypeError(f'Unexpected dumps type: {type(obj)}')
 
 
 def _dataset_from_provider_name(provider_name: str) -> str:
