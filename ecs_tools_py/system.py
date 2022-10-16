@@ -22,7 +22,7 @@ from ecs_tools_py.exceptions import UnexpectedFieldsError, NamespaceFieldIsNotDa
 
 LOG: Final[Logger] = getLogger(__name__)
 
-_OPTIONAL_TYPE_PATTERN: Final[RePattern] = re_compile(pattern=r'^Optional\[([^]]+)\]$')
+_OPTIONAL_TYPE_PATTERN: Final[RePattern] = re_compile(pattern=r'^([^ ]+) | None$')
 
 # host
 
