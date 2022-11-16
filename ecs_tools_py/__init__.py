@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Final, Type, Sequence, TypeVar, cast, Any
 from re import compile as re_compile, Pattern as RePattern
 from logging import LogRecord, WARNING, ERROR, CRITICAL, Handler
+from logging.handlers import SysLogHandler
 from pathlib import PurePath
 from traceback import format_tb
 from textwrap import dedent
@@ -749,7 +750,7 @@ def make_log_handler(
                 except:
                     self._emit_signing_error_message(record_name=record.name)
 
-            record.msg = message
+            record.msg = f'{ecs_log_entry_event.dataset} {message}' if base_class is SysLogHandler else message
 
             # Clear the record of exception information, which has already been handled, that would confuse the parent
             # `emit` method.
