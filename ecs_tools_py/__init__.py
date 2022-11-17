@@ -290,7 +290,8 @@ def entry_from_http_message(
     include_decompressed_body: bool = False,
     use_host_header: bool = False,
     use_forwarded_header: bool = False,
-    public_suffix_list_trie: PublicSuffixListTrie | None = None
+    public_suffix_list_trie: PublicSuffixListTrie | None = None,
+    body_limit: int | None = 4096
 ) -> Base:
     """
     Produce an entry from an HTTP message.
@@ -301,6 +302,7 @@ def entry_from_http_message(
     :param use_host_header: Whether to parse the `Host` HTTP header.
     :param public_suffix_list_trie: A Public Suffix List trie with which to obtain extra attributes about an HTTP
         request's path.
+    :param body_limit: The maximum number of bytes that can be included in the body, or `None` to not use a limit.
     :return:
     """
 
@@ -325,11 +327,18 @@ def entry_from_http_message(
         message_bytes = http_message.body.tobytes()
 
         body_mime_type: str = magic_from_buffer(buffer=message_bytes, mime=True).lower()
-        include_body = 'octet-stream' not in body_mime_type
+        include_body = (
+            'octet-stream' not in body_mime_type
+            and (body_limit is None or len(message_bytes) < body_limit)
+        )
 
         if include_decompressed_body and (decompressed_body := decompress_body(body=message_bytes, mime_type=body_mime_type)):
             decompressed_body_mime_type: str = magic_from_buffer(buffer=decompressed_body, mime=True).lower()
-            include_decompressed_body = include_decompressed_body and 'octet-stream' not in decompressed_body_mime_type
+            include_decompressed_body = (
+                include_decompressed_body and 'octet-stream' not in decompressed_body_mime_type and (
+                    body_limit is None or len(decompressed_body) < body_limit
+                )
+            )
 
     network_entry: Network | None = None
     client_entry: Client | None = None
