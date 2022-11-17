@@ -273,14 +273,14 @@ def user_agent_entry_from_string(
             raise e
     else:
         ecs_user_agent.device = UserAgentDevice(
-            name=user_agent.device.family
+            name=user_agent.device.family or None
         ) if user_agent.device.family != 'Other' else None
-        ecs_user_agent.name = user_agent.browser.family
+        ecs_user_agent.name = user_agent.browser.family or None
         ecs_user_agent.os = OS(
             family=user_agent.os.family,
-            version=user_agent.os.version_string
+            version=user_agent.os.version_string or None
         ) if user_agent.os.family != 'Other' else None
-        ecs_user_agent.version = user_agent.browser.version_string
+        ecs_user_agent.version = user_agent.browser.version_string or None
 
     return ecs_user_agent
 
@@ -379,7 +379,7 @@ def entry_from_http_message(
             request=ECSHttpRequest(
                 **ecs_http_message_kwargs,
                 method=http_message.request_line.method if http_message.request_line else None,
-                referrer=next(iter(headers.get('referer', [])), ''),
+                referrer=next(iter(headers.get('referer', [])), None),
             ),
             version=(
                 (http_message.request_line.http_version or '').removeprefix('HTTP/')
