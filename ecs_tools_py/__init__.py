@@ -318,11 +318,16 @@ def entry_from_http_message(
     decompressed_body: bytes | None = None
     body_mime_type: str | None = None
     include_body = False
+
+    message_bytes = b''
+
     if http_message.body:
-        body_mime_type: str = magic_from_buffer(buffer=http_message.body.tobytes(), mime=True).lower()
+        message_bytes = http_message.body.tobytes()
+
+        body_mime_type: str = magic_from_buffer(buffer=message_bytes, mime=True).lower()
         include_body = 'octet-stream' not in body_mime_type
 
-        if include_decompressed_body and (decompressed_body := decompress_body(body=http_message.body.tobytes(), mime_type=body_mime_type)):
+        if include_decompressed_body and (decompressed_body := decompress_body(body=message_bytes, mime_type=body_mime_type)):
             decompressed_body_mime_type: str = magic_from_buffer(buffer=decompressed_body, mime=True).lower()
             include_decompressed_body = include_decompressed_body and 'octet-stream' not in decompressed_body_mime_type
 
@@ -337,8 +342,8 @@ def entry_from_http_message(
         headers=headers or None,
         body=HttpBody(
             bytes=len(http_message.body) if http_message.body else None,
-            content=http_message.body if include_body else None,
-            decompressed_content=decompressed_body if include_decompressed_body else None
+            content=message_bytes.decode() if include_body else None,
+            decompressed_content=decompressed_body.decode() if include_decompressed_body else None
         ),
         bytes=len(http_message.raw) if http_message.raw else None,
         mime_type=body_mime_type or None,
