@@ -3,13 +3,11 @@ from datetime import datetime
 from typing import Final, Type, Sequence, TypeVar, cast, Any
 from re import compile as re_compile, Pattern as RePattern
 from logging import LogRecord, WARNING, ERROR, CRITICAL, Handler
-from logging.handlers import SysLogHandler
 from pathlib import PurePath
 from traceback import format_tb
 from textwrap import dedent
 from errno import errorcode
 from json import dumps as json_dumps
-from sys import exc_info as sys_exc_info
 from inspect import currentframe, getframeinfo
 from ipaddress import IPv4Address, IPv6Address
 from socket import socket as socket_class, SocketKind, AddressFamily
@@ -441,6 +439,19 @@ def error_entry_from_exc_info(exc_info) -> Error:
     )
 
 
+def error_from_exception(exception: BaseException) -> Error:
+    """
+    Produce an ECS `Error` entry from an exception.
+
+    :param exception: An exception from which to produce an `Error` entry.
+    :return: An ECS `Error` entry produced from the provided exception.
+    """
+
+    return error_entry_from_exc_info(
+        exc_info=(type(exception), exception, exception.__traceback__)
+    )
+
+
 def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None = None) -> Base:
     """
     Produce an ECS `Base` entry from a log record.
@@ -606,7 +617,7 @@ def make_log_handler(
             self._sequence_number += 1
             return sequence_number
 
-        def _emit_signing_error_message(self, record_name: str) -> None:
+        def _emit_signing_error_message(self, record_name: str, exception: BaseException) -> None:
             frameinfo = getframeinfo(currentframe())
 
             super().emit(
@@ -617,7 +628,7 @@ def make_log_handler(
                     lineno=frameinfo.lineno,
                     msg=json_dumps(
                         obj=Base(
-                            error=error_entry_from_exc_info(exc_info=sys_exc_info()),
+                            error=error_from_exception(exception=exception),
                             message='An error occurred when attempting to sign a log record message.',
                             log=Log(logger=self.logger),
                             event=Event(
@@ -635,11 +646,11 @@ def make_log_handler(
                 )
             )
 
-        def _emit_generate_fields_error_message(self, record_name: str) -> None:
+        def _emit_generate_fields_error_message(self, record_name: str, exception: BaseException) -> None:
             frameinfo = getframeinfo(currentframe())
 
             log_entry_dict: dict[str, Any] = Base(
-                error=error_entry_from_exc_info(exc_info=sys_exc_info()),
+                error=error_from_exception(exception=exception),
                 message='An error occurred when generating fields for a log record.',
                 log=Log(logger=self.logger),
                 event=Event(
@@ -654,8 +665,8 @@ def make_log_handler(
             if signing_information is not None:
                 try:
                     message: str = self._sign(message=message, log_entry_dict=log_entry_dict)
-                except:
-                    self._emit_signing_error_message(record_name=record_name)
+                except BaseException as e:
+                    self._emit_signing_error_message(record_name=record_name, exception=e)
 
             super().emit(
                 record=LogRecord(
@@ -680,8 +691,8 @@ def make_log_handler(
 
             try:
                 ecs_log_entry = entry_from_log_record(record=record, field_names=self._generate_field_names)
-            except:
-                self._emit_generate_fields_error_message(record_name=record.name)
+            except BaseException as e:
+                self._emit_generate_fields_error_message(record_name=record.name, exception=e)
                 ecs_log_entry = entry_from_log_record(record=record, field_names=[])
 
             # Assign information about the log and provider that was provided to the make function, and a sequence
@@ -747,10 +758,10 @@ def make_log_handler(
             if signing_information is not None:
                 try:
                     message: str = self._sign(message=message, log_entry_dict=log_entry_dict)
-                except:
-                    self._emit_signing_error_message(record_name=record.name)
+                except BaseException as e:
+                    self._emit_signing_error_message(record_name=record.name, exception=e)
 
-            record.msg = f'{ecs_log_entry_event.dataset} {message}' if base_class is SysLogHandler else message
+            record.msg = message
 
             # Clear the record of exception information, which has already been handled, that would confuse the parent
             # `emit` method.
