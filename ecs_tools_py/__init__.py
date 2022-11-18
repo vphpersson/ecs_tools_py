@@ -311,11 +311,11 @@ def entry_from_http_message(
         headers[name.replace('-', '_').lower()].append(value)
     headers = dict(headers)
 
-    content_type: str | None = (
-        media_type.full_type
-        if (media_type := parse_content_type(content_type_value=next(iter(headers.get('content_type', [])), '')))
-        else None
-    )
+    content_type: str | None = None
+    encoding: str | None = None
+    if media_type := parse_content_type(content_type_value=next(iter(headers.get('content_type', [])), '')):
+        content_type = media_type.full_type
+        encoding = next((value.lower() for (key, value) in media_type.parameters if key.lower() == 'charset'), None)
 
     decompressed_body: bytes | None = None
     body_mime_type: str | None = None
@@ -351,8 +351,8 @@ def entry_from_http_message(
         headers=headers or None,
         body=HttpBody(
             bytes=len(http_message.body) if http_message.body else None,
-            content=message_bytes.decode() if include_body else None,
-            decompressed_content=decompressed_body.decode() if include_decompressed_body else None
+            content=message_bytes.decode(encoding=encoding or 'charmap') if include_body else None,
+            decompressed_content=decompressed_body.decode(encoding=encoding or 'charmap') if include_decompressed_body else None
         ),
         bytes=len(http_message.raw) if http_message.raw else None,
         mime_type=body_mime_type or None,
