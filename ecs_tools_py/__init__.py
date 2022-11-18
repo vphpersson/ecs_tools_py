@@ -352,7 +352,11 @@ def entry_from_http_message(
         body=HttpBody(
             bytes=len(http_message.body) if http_message.body else None,
             content=message_bytes.decode(encoding=encoding or 'charmap') if include_body else None,
-            decompressed_content=decompressed_body.decode(encoding=encoding or 'charmap') if include_decompressed_body else None
+            decompressed_content=(
+                decompressed_body.decode(encoding=encoding or 'charmap')
+                if decompressed_body and include_decompressed_body
+                else None
+            )
         ),
         bytes=len(http_message.raw) if http_message.raw else None,
         mime_type=body_mime_type or None,
