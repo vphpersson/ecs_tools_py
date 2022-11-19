@@ -328,7 +328,7 @@ def entry_from_http_message(
 
         body_mime_type: str = magic_from_buffer(buffer=message_bytes, mime=True).lower()
         include_body = (
-            'octet-stream' not in body_mime_type
+            body_mime_type not in {'octet-stream', 'application-gzip'}
             and (body_limit is None or len(message_bytes) < body_limit)
         )
 
@@ -560,7 +560,7 @@ def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None =
     return base
 
 
-def _dumps_function(obj: Any):
+def json_dumps_default(obj: Any):
     if isinstance(obj, datetime):
         return obj.isoformat()
     elif isinstance(obj, bytes):
@@ -627,7 +627,7 @@ def make_log_handler(
                 signing_information.hash_function(message.encode())
             ).hex()
 
-            return json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
+            return json_dumps(obj=log_entry_dict, sort_keys=True, default=json_dumps_default)
 
         def _get_sequence_number(self) -> int:
             """Claim a sequence number and increment."""
@@ -656,7 +656,7 @@ def make_log_handler(
                             )
                         ).to_dict(),
                         sort_keys=True,
-                        default=_dumps_function
+                        default=json_dumps_default
                     ),
                     func=frameinfo.function,
                     args=None,
@@ -678,7 +678,7 @@ def make_log_handler(
                 )
             ).to_dict()
 
-            message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
+            message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=json_dumps_default)
 
             if signing_information is not None:
                 try:
@@ -769,7 +769,7 @@ def make_log_handler(
 
             # Create the JSON-string representation of the log record's dictionary, which constitutes the log message.
 
-            message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=_dumps_function)
+            message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=json_dumps_default)
 
             # Sign the message if signing information has been provided
 
