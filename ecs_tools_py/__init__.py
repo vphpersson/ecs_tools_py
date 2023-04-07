@@ -586,9 +586,9 @@ def email_file_attachments_from_email_message(email_message: EmailMessage) -> li
         file_hash = Hash()
         file_len: int | None = None
         if data:
-            file_hash.md5 = md5(data)
-            file_hash.sha1 = sha1(data)
-            file_hash.sha256 = sha256(data)
+            file_hash.md5 = md5(data).hexdigest()
+            file_hash.sha1 = sha1(data).hexdigest()
+            file_hash.sha256 = sha256(data).hexdigest()
             file_len = len(data)
 
         attachment_file_list.append(
