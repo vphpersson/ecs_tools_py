@@ -12,10 +12,12 @@ from inspect import currentframe, getframeinfo
 from ipaddress import IPv4Address, IPv6Address
 from socket import socket as socket_class, SocketKind, AddressFamily
 from dataclasses import fields as dataclasses_fields
+from email.message import Message as EmailMessage
+from hashlib import md5, sha1, sha256
 
 from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, \
     HttpRequest as ECSHttpRequest, HttpResponse as ECSHttpResponse, HttpBody, URL, UserAgent as ECSUserAgent, \
-    UserAgentDevice, OS, Network, Client, Server, Destination, Source, ECSEntry
+    UserAgentDevice, OS, Network, Client, Server, Destination, Source, ECSEntry, EmailAttachmentFile, Hash
 from psutil import boot_time as psutil_boot_time
 from string_utils_py import to_snake_case
 from http_lib.structures.message import Message as HTTPMessage, Request as HTTPRequest, Response as HTTPResponse
@@ -365,7 +367,7 @@ def entry_from_http_message(
 
     if isinstance(http_message, HTTPRequest):
         if use_host_header and (host_header_value := next(iter(headers.get('host', [])), None)):
-            destination_entry: Destination = entry_from_host_header_value(
+            destination_entry = entry_from_host_header_value(
                 host_header_value=host_header_value,
                 entry_type=Destination
             )
@@ -381,7 +383,7 @@ def entry_from_http_message(
                 network_entry = Network(forwarded_ip=client_entry.address)
 
         if http_message.request_line:
-            url_entry: URL = url_entry_from_string(
+            url_entry = url_entry_from_string(
                 url=http_message.request_line.request_target,
                 public_suffix_list_trie=public_suffix_list_trie
             )
@@ -558,6 +560,48 @@ def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None =
     base.message = record.msg
 
     return base
+
+
+def email_file_attachments_from_email_message(email_message: EmailMessage) -> list[EmailAttachmentFile]:
+    """
+    Produce a list of ECS EmailAttachmentFile entries from an email message.
+
+    :param email_message: An email message from which to parse file attachments.
+    :return: A list of file attachments parsed from the email message.
+    """
+
+    attachment_file_list: list[EmailAttachmentFile] = []
+
+    part: EmailMessage
+    for part in email_message.walk():
+        if part.is_multipart():
+            continue
+
+        filename: str | None = part.get_filename(failobj=None)
+        file_extension: str | None = None
+        if filename:
+            file_extension = PurePath(filename).suffix[1:]
+
+        data: bytes | None = part.get_payload(decode=True)
+        file_hash = Hash()
+        file_len: int | None = None
+        if data:
+            file_hash.md5 = md5(data)
+            file_hash.sha1 = sha1(data)
+            file_hash.sha256 = sha256(data)
+            file_len = len(data)
+
+        attachment_file_list.append(
+            EmailAttachmentFile(
+                extension=file_extension,
+                hash=file_hash,
+                mime_type=part.get_content_type(),
+                name=filename,
+                size=file_len
+            )
+        )
+
+    return attachment_file_list
 
 
 def json_dumps_default(obj: Any):
