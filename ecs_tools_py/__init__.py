@@ -12,12 +12,13 @@ from inspect import currentframe, getframeinfo
 from ipaddress import IPv4Address, IPv6Address
 from socket import socket as socket_class, SocketKind, AddressFamily
 from dataclasses import fields as dataclasses_fields
-from email.message import Message as EmailMessage
+from email.message import EmailMessage
 from hashlib import md5, sha1, sha256
 
 from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, \
     HttpRequest as ECSHttpRequest, HttpResponse as ECSHttpResponse, HttpBody, URL, UserAgent as ECSUserAgent, \
-    UserAgentDevice, OS, Network, Client, Server, Destination, Source, ECSEntry, EmailAttachmentFile, Hash
+    UserAgentDevice, OS, Network, Client, Server, Destination, Source, ECSEntry, EmailAttachmentFile, Hash, \
+    EmailBody
 from psutil import boot_time as psutil_boot_time
 from string_utils_py import to_snake_case
 from http_lib.structures.message import Message as HTTPMessage, Request as HTTPRequest, Response as HTTPResponse
@@ -562,6 +563,36 @@ def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None =
     return base
 
 
+def email_bodies_from_email_message(email_message: EmailMessage) -> list[EmailBody]:
+    """
+    Produce a list of EmailBody entries from an email entries.
+
+    Note that `EmailBody` is a custom field, not part of ECS.
+
+    :param email_message: An email message from which to parse bodies.
+    :return: A list of bodies parsed from the email message.
+    """
+
+    email_body_list: list[EmailBody] = []
+
+    part: EmailMessage
+    for part in email_message.walk():
+        if part.get_filename() or part.is_multipart():
+            continue
+
+        if part.get_content_maintype() == 'text':
+            content = part.get_payload(decode=True)
+            email_body_list.append(
+                EmailBody(
+                    content_type=part.get_content_type(),
+                    content=content.decode(encoding='charmap'),
+                    size=len(content)
+                )
+            )
+
+    return email_body_list
+
+
 def email_file_attachments_from_email_message(email_message: EmailMessage) -> list[EmailAttachmentFile]:
     """
     Produce a list of ECS EmailAttachmentFile entries from an email message.
@@ -573,11 +604,8 @@ def email_file_attachments_from_email_message(email_message: EmailMessage) -> li
     attachment_file_list: list[EmailAttachmentFile] = []
 
     part: EmailMessage
-    for part in email_message.walk():
-        if part.is_multipart():
-            continue
-
-        filename: str | None = part.get_filename(failobj=None)
+    for part in email_message.iter_attachments():
+        filename: str | None = part.get_filename()
         file_extension: str | None = None
         if filename:
             file_extension = PurePath(filename).suffix[1:]
