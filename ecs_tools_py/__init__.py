@@ -12,7 +12,7 @@ from inspect import currentframe, getframeinfo
 from ipaddress import IPv4Address, IPv6Address
 from socket import socket as socket_class, SocketKind, AddressFamily
 from dataclasses import fields as dataclasses_fields
-from email.message import EmailMessage
+from email.message import Message
 from hashlib import md5, sha1, sha256
 
 from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, \
@@ -563,7 +563,7 @@ def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None =
     return base
 
 
-def email_bodies_from_email_message(email_message: EmailMessage) -> list[EmailBody]:
+def email_bodies_from_email_message(email_message: Message) -> list[EmailBody]:
     """
     Produce a list of EmailBody entries from an email entries.
 
@@ -575,7 +575,7 @@ def email_bodies_from_email_message(email_message: EmailMessage) -> list[EmailBo
 
     email_body_list: list[EmailBody] = []
 
-    part: EmailMessage
+    part: Message
     for part in email_message.walk():
         if part.get_filename() or part.is_multipart():
             continue
@@ -593,7 +593,7 @@ def email_bodies_from_email_message(email_message: EmailMessage) -> list[EmailBo
     return email_body_list
 
 
-def email_file_attachments_from_email_message(email_message: EmailMessage) -> list[EmailAttachmentFile]:
+def email_file_attachments_from_email_message(email_message: Message) -> list[EmailAttachmentFile]:
     """
     Produce a list of ECS EmailAttachmentFile entries from an email message.
 
@@ -603,9 +603,15 @@ def email_file_attachments_from_email_message(email_message: EmailMessage) -> li
 
     attachment_file_list: list[EmailAttachmentFile] = []
 
-    part: EmailMessage
-    for part in email_message.iter_attachments():
+    part: Message
+    for part in email_message.walk():
+        if part.is_multipart():
+            continue
+
         filename: str | None = part.get_filename()
+        if not filename:
+            continue
+
         file_extension: str | None = None
         if filename:
             file_extension = PurePath(filename).suffix[1:]
