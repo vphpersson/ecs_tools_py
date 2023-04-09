@@ -1,3 +1,4 @@
+from logging import getLogger, Logger
 from collections import defaultdict
 from datetime import datetime
 from typing import Final, Type, Sequence, TypeVar, cast, Any
@@ -13,12 +14,17 @@ from ipaddress import IPv4Address, IPv6Address
 from socket import socket as socket_class, SocketKind, AddressFamily
 from dataclasses import fields as dataclasses_fields
 from email.message import Message
+from email.utils import parseaddr as email_util_parseaddr, parsedate as email_utils_parsedate, \
+    getaddresses as email_utils_getaddresses
+from email.header import decode_header
+from email import message_from_string as email_message_from_string
+from time import mktime
 from hashlib import md5, sha1, sha256
 
 from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, \
     HttpRequest as ECSHttpRequest, HttpResponse as ECSHttpResponse, HttpBody, URL, UserAgent as ECSUserAgent, \
     UserAgentDevice, OS, Network, Client, Server, Destination, Source, ECSEntry, EmailAttachmentFile, Hash, \
-    EmailBody
+    EmailBody, Email, BCC, CC, From, ReplyTo, To, EmailAttachment
 from psutil import boot_time as psutil_boot_time
 from string_utils_py import to_snake_case
 from http_lib.structures.message import Message as HTTPMessage, Request as HTTPRequest, Response as HTTPResponse
@@ -35,7 +41,11 @@ from magic import from_buffer as magic_from_buffer
 from ecs_tools_py.system import entry_from_system
 from ecs_tools_py.structures import SigningInformation
 
+LOG: Final[Logger] = getLogger(__name__)
+
 _DT_TIMEZONE_PATTERN: Final[RePattern] = re_compile(pattern=r'^(.{3})(.{2}).*$')
+
+_EMAIL_HEADER_FIX_PATTERN: Final[RePattern] = re_compile(pattern=r'(^\s+|\t)')
 
 # NOTE: May need to be maintained.
 _RESERVED_LOG_RECORD_KEYS: Final[set[str]] = {
@@ -563,13 +573,19 @@ def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None =
     return base
 
 
-def email_bodies_from_email_message(email_message: Message) -> list[EmailBody]:
+def email_bodies_from_email_message(
+    email_message: Message,
+    include_content: bool = False,
+    include_non_text_content: bool = False
+) -> list[EmailBody]:
     """
     Produce a list of EmailBody entries from an email entries.
 
     Note that `EmailBody` is a custom field, not part of ECS.
 
     :param email_message: An email message from which to parse bodies.
+    :param include_content: Whether to include the body content in the entry.
+    :param include_non_text_content: Whether to include non-text body content in the entry.
     :return: A list of bodies parsed from the email message.
     """
 
@@ -580,24 +596,34 @@ def email_bodies_from_email_message(email_message: Message) -> list[EmailBody]:
         if part.get_filename() or part.is_multipart():
             continue
 
-        if part.get_content_maintype() == 'text':
-            content = part.get_payload(decode=True)
-            email_body_list.append(
-                EmailBody(
-                    content_type=part.get_content_type(),
-                    content=content.decode(encoding='charmap'),
-                    size=len(content)
-                )
+        content: str | None = (
+            data.decode(encoding=part.get_content_charset() or 'charmap')
+            if (data := part.get_payload(decode=True)) and include_content and (include_non_text_content or part.get_content_maintype() == 'text')
+            else None
+        )
+
+        email_body_list.append(
+            EmailBody(
+                content=content,
+                content_type=part.get_content_type(),
+                size=len(content) if content else None
             )
+        )
 
     return email_body_list
 
 
-def email_file_attachments_from_email_message(email_message: Message) -> list[EmailAttachmentFile]:
+def email_file_attachments_from_email_message(
+    email_message: Message,
+    include_content: bool = False,
+    include_non_text_content: bool = False,
+) -> list[EmailAttachmentFile]:
     """
     Produce a list of ECS EmailAttachmentFile entries from an email message.
 
     :param email_message: An email message from which to parse file attachments.
+    :param include_content: Whether to include the body content in the entry.
+    :param include_non_text_content: Whether to include non-text body content in the entry.
     :return: A list of file attachments parsed from the email message.
     """
 
@@ -627,6 +653,11 @@ def email_file_attachments_from_email_message(email_message: Message) -> list[Em
 
         attachment_file_list.append(
             EmailAttachmentFile(
+                content=(
+                    data.decode(encoding=part.get_content_charset() or 'charmap')
+                    if data and include_content and (include_non_text_content or part.get_content_maintype() == 'text')
+                    else None
+                ),
                 extension=file_extension,
                 hash=file_hash,
                 mime_type=part.get_content_type(),
@@ -636,6 +667,130 @@ def email_file_attachments_from_email_message(email_message: Message) -> list[Em
         )
 
     return attachment_file_list
+
+
+def _decode_header_value(header_value: str) -> str:
+    return ''.join(
+        (value.decode(encoding=encoding) if encoding else (value.decode() if isinstance(value, bytes) else value))
+        for value, encoding in decode_header(header=header_value)
+    )
+
+
+def _decode_address_line(line: str) -> list[tuple[str | None, str]]:
+    return email_utils_getaddresses(
+        email_message_from_string(f'To: {line}').get_all('To', [])
+    )
+
+
+def email_from_email_message(
+    email_message: Message,
+    include_raw_headers: bool = False,
+    extract_attachments: bool = True,
+    extract_bodies: bool = False,
+    extract_attachment_contents: bool = False,
+    extract_body_content: bool = False
+) -> Email:
+    """
+    Produce an ECS Email entry from an email message.
+
+    :param email_message: An email message from which to extract ECS email data.
+    :param include_raw_headers: Whether to include the email's raw headers in the entry.
+    :param extract_attachments: Whether to extract attachments data from the email message.
+    :param extract_bodies: Whether to extract bodies data from the email message.
+    :param extract_attachment_contents: Whether to extract the text content of attachments.
+    :param extract_body_content: Whether to extract the text content of bodies.
+    :return: An ECS email entry.
+    """
+
+    ecs_email = Email()
+    headers: defaultdict[str, list[str]] = defaultdict(list)
+
+    ecs_email.content_type = email_message.get_content_type()
+
+    for header_field, header_value in email_message.items():
+        fixed_field: str = header_field.replace('-', '_').lower()
+        # Unfold header values, removing repeated initial whitespace, and replace tabs with spaces.
+        fixed_value: str = ''.join(
+            _EMAIL_HEADER_FIX_PATTERN.sub(repl=' ', string=line)
+            for line in _decode_header_value(header_value=header_value).splitlines()
+        )
+
+        match fixed_field:
+            case 'x_mailer':
+                ecs_email.x_mailer = fixed_value
+            case 'x_original_ip':
+                ecs_email.x_original_ip = fixed_value
+            case 'x_user_agent':
+                ecs_email.x_user_agent = fixed_value
+            case 'message_id':
+                ecs_email.message_id = email_util_parseaddr(addr=fixed_value)[1]
+            case 'subject':
+                ecs_email.subject = fixed_value
+            case 'date':
+                ecs_email.origination_timestamp = datetime.fromtimestamp(
+                    mktime(email_utils_parsedate(data=fixed_value))
+                )
+            case 'bcc' | 'cc' | 'from' | 'to' | 'reply_to':
+                name_list: list[str | None] = []
+                address_list: list[str] = []
+
+                for name, address in _decode_address_line(line=fixed_value):
+                    name_list.append(name or None)
+                    address_list.append(address)
+
+                setattr_field: str = fixed_field
+
+                match fixed_field:
+                    case 'bcc':
+                        constructor = BCC
+                    case 'cc':
+                        constructor = CC
+                    case 'from':
+                        constructor = From
+                        setattr_field = 'from_'
+                    case 'to':
+                        constructor = To
+                    case 'reply_to':
+                        constructor = ReplyTo
+                    case _:
+                        raise ValueError(f'Unexpected fixed field value was encountered: {fixed_field}')
+
+                if constructor:
+                    setattr(ecs_email, setattr_field, constructor(name=name_list, address=address_list))
+
+        headers[fixed_field].append(fixed_value)
+
+    ecs_email.headers = dict(headers)
+    # NOTE: `raw_headers` is not part of ECS.
+    if include_raw_headers:
+        ecs_email.raw_headers = ''.join(
+            f'{header_field}: {header_value}\r\n'
+            for header_field, header_value in email_message.items()
+        )
+
+    # NOTE: `content` is not part of ECS. When including content, text content will be included regardless of size.
+    if extract_bodies:
+        ecs_email.bodies = email_bodies_from_email_message(
+            email_message=email_message,
+            include_content=extract_body_content,
+            include_non_text_content=False
+
+        )
+
+    # NOTE: `content` is not part of ECS. When including content, text content will be included regardless of size.
+    if extract_attachments:
+        email_attachment_file_list: list[EmailAttachmentFile] = email_file_attachments_from_email_message(
+            email_message=email_message,
+            include_content=extract_attachment_contents,
+            include_non_text_content=False
+        )
+        if email_attachment_file_list:
+            ecs_email.attachments = [
+                EmailAttachment(file=email_attachment_file)
+                for email_attachment_file in email_attachment_file_list
+            ]
+
+    return ecs_email
 
 
 def json_dumps_default(obj: Any):
