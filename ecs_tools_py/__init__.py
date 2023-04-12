@@ -20,11 +20,12 @@ from email.header import decode_header
 from email import message_from_string as email_message_from_string
 from time import mktime
 from hashlib import md5, sha1, sha256
+from sys import exc_info
 
 from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, \
     HttpRequest as ECSHttpRequest, HttpResponse as ECSHttpResponse, HttpBody, URL, UserAgent as ECSUserAgent, \
     UserAgentDevice, OS, Network, Client, Server, Destination, Source, ECSEntry, EmailAttachmentFile, Hash, \
-    EmailBody, Email, BCC, CC, From, ReplyTo, To, EmailAttachment
+    EmailBody, Email, BCC, CC, From, ReplyTo, To, EmailAttachment, Related, SMTP, User
 from psutil import boot_time as psutil_boot_time
 from string_utils_py import to_snake_case
 from http_lib.structures.message import Message as HTTPMessage, Request as HTTPRequest, Response as HTTPResponse
@@ -37,6 +38,9 @@ from public_suffix.structures.public_suffix_list_trie import PublicSuffixListTri
 from user_agents import parse as user_agents_parse
 from user_agents.parsers import UserAgent
 from magic import from_buffer as magic_from_buffer
+from abnf_parse.exceptions import NoMatchError
+from abnf_parse.rulesets.rfc5321 import RFC5321_RULESET
+from abnf_parse.structures.match_node import MatchNode
 
 from ecs_tools_py.system import entry_from_system
 from ecs_tools_py.structures import SigningInformation
@@ -680,6 +684,106 @@ def _decode_address_line(line: str) -> list[tuple[str | None, str]]:
     return email_utils_getaddresses(
         email_message_from_string(f'To: {line}').get_all('To', [])
     )
+
+
+def related_from_ecs_email(ecs_email: Email) -> Related:
+    """
+    Produce an ECS Related entry from an ECS email entry.
+
+    :param ecs_email: The ECS email entry from which to extract information.
+    :return: An ECS Related entry.
+    """
+
+    users: set[str] = set()
+    hosts: set[str] = set()
+    hashes: set[str] = set()
+    ip_addresses: set[str] = set()
+
+    for attr in {'bcc', 'cc', 'from_', 'reply_to', 'to'}:
+        if user_host_entry := getattr(ecs_email, attr):
+            for name in user_host_entry.name:
+                if name is not None:
+                    users.add(name.lower())
+            for address in user_host_entry.address:
+                users.add(address.lower())
+                user_name, host = address.split('@')
+                users.add(user_name.lower())
+                hosts.add(host.lower())
+
+    if (sender := ecs_email.sender) and sender.address:
+        user_name, host = sender.address.split('@')
+        users.add(user_name.lower())
+        hosts.add(host.lower())
+
+    if attachments := ecs_email.attachments:
+        for attachment in attachments:
+            if attachment.file and (attachment_hash := attachment.file.hash):
+                for hash_value in dict(attachment_hash).values():
+                    if hash_value:
+                        hashes.add(hash_value)
+
+    if x_original_ip := ecs_email.x_original_ip:
+        ip_addresses.add(x_original_ip)
+
+    for received_value in ecs_email.headers.get('received', []):
+        try:
+            match: MatchNode = RFC5321_RULESET['Stamp'].evaluate(received_value)
+        except NoMatchError:
+            LOG.warning(
+                msg='The `Receive` value did not match the RFC definition and therefore could not be parsed.',
+                exc_info=exc_info(),
+                extra=dict(
+                    error=dict(input=received_value),
+                    _ecs_logger_handler_options=dict(merge_extra=True)
+                )
+            )
+        else:
+            for ipv4_address_match in match.search(name='IPv4-address-literal', search_match=True):
+                ip_addresses.add(ipv4_address_match.get_value().decode())
+            for ipv6_address_match in match.search(name='IPv6-addr', search_match=True):
+                ip_addresses.add(ipv6_address_match.get_value().decode())
+
+    return Related(
+        hash=list(hashes) or None,
+        hosts=list(hosts) or None,
+        ip=list(ip_addresses) or None,
+        user=list(users) or None,
+    )
+
+
+def user_from_smtp_to_from(ecs_smtp: SMTP, ecs_from: From | None = None, ecs_to: To | None = None) -> User:
+    """
+    Extract user information from an SMTP entry, optionally complementing with information from To and/or From entries.
+
+    :param ecs_smtp: An SMTP entry from which to extract user information.
+    :param ecs_from: A From entry from which to extract user information that complements that of the SMTP entry.
+    :param ecs_to: A To entry from which to extract user information that complements that of the SMTP entry.
+    :return: A ECS User entry.
+    """
+
+    user = User()
+
+    if mail_from := ecs_smtp.mail_from:
+        user.name = mail_from.split('@')[0]
+        user.email = mail_from
+        user.full_name = next(
+            (name for name, address in zip(ecs_from.name, ecs_from.address) if address == ecs_smtp.mail_from),
+            None
+        ) if ecs_from else None
+
+    if rcpt_to := ecs_smtp.rcpt_to:
+        user.target = User(
+            name=rcpt_to.split('@')[0],
+            email=rcpt_to,
+            full_name=(
+                next(
+                    (name for name, address in zip(ecs_to.name, ecs_to.address) if address == rcpt_to),
+                    None
+                ) if ecs_from else None
+            )
+        )
+
+    return user
 
 
 def email_from_email_message(
