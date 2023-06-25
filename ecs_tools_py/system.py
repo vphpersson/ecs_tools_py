@@ -175,23 +175,23 @@ FIELD_TO_MAKE_FUNCTION: Final[dict[str, Callable[[], Any] | None]] = {
     'host.name': make_host_name,
     'host.os.kernel': make_os_kernel,
     'host.os.type': make_os_type,
-    'process.args': make_process_args,
-    'process.arg_count': None,
-    'process.command_line': None,
-    'process.executable': make_process_executable,
-    'process.name': None,
-    'process.pid': make_process_pid,
-    'process.start': make_process_start,
-    'process.parent.pid': make_process_parent_pid,
-    'process.user.id': make_process_user_id,
-    'process.user.name': make_process_user_name,
-    'process.user.effective.id': make_process_user_effective_id,
-    'process.user.effective.name': make_process_user_effective_name,
-    'process.group.id': make_process_group_id,
-    'process.group.name': make_process_group_name,
-    'process.group.effective.id': make_process_group_effective_id,
-    'process.group.effective.name': make_progress_group_effective_name,
-    'process.working_directory': make_process_working_directory
+    'log.origin.process.args': make_process_args,
+    'log.origin.process.arg_count': None,
+    'log.origin.process.command_line': None,
+    'log.origin.process.executable': make_process_executable,
+    'log.origin.process.name': None,
+    'log.origin.process.pid': make_process_pid,
+    'log.origin.process.start': make_process_start,
+    'log.origin.process.parent.pid': make_process_parent_pid,
+    'log.origin.process.user.id': make_process_user_id,
+    'log.origin.process.user.name': make_process_user_name,
+    'log.origin.process.user.effective.id': make_process_user_effective_id,
+    'log.origin.process.user.effective.name': make_process_user_effective_name,
+    'log.origin.process.group.id': make_process_group_id,
+    'log.origin.process.group.name': make_process_group_name,
+    'log.origin.process.group.effective.id': make_process_group_effective_id,
+    'log.origin.process.group.effective.name': make_progress_group_effective_name,
+    'log.origin.process.working_directory': make_process_working_directory
 }
 
 SUPPORTED_FIELD_NAMES: Final[set[str]] = set(FIELD_TO_MAKE_FUNCTION.keys())
@@ -282,13 +282,13 @@ def entry_from_system(field_names: Sequence[str | None] = None) -> Base:
             try:
                 value = None
                 match derived_full_field_name:
-                    case 'process.arg_count':
+                    case 'log.origin.process.arg_count':
                         if process_args := getattr(namespace_storage, 'args', None):
                             value = derive_process_arg_count(args=process_args)
-                    case 'process.command_line':
+                    case 'log.origin.process.command_line':
                         if process_args := getattr(namespace_storage, 'args', None):
                             value = derive_process_command_line(args=process_args)
-                    case 'process.name':
+                    case 'log.origin.process.process.name':
                         if process_executable := getattr(namespace_storage, 'executable', None):
                             value = derive_process_name(executable=process_executable)
                     case _:
