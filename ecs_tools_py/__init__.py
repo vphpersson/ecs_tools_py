@@ -516,9 +516,9 @@ def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None =
         else:
             add_host_uptime = False
 
-        if (field_name := 'process.uptime') in field_names:
+        if (field_name := 'log.origin.process.uptime') in field_names:
             field_names.remove(field_name)
-            add_process_uptime = 'process.start' in field_names
+            add_process_uptime = 'log.origin.process.start' in field_names
         else:
             add_process_uptime = False
 
@@ -559,18 +559,18 @@ def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None =
             create_namespaces=True
         ).uptime = (base.event.created - datetime.fromtimestamp(psutil_boot_time()).astimezone()).seconds
 
-    if add_process_uptime and (process_start := base.get_field_value(field_name='process.start')):
+    if add_process_uptime and (process_start := base.get_field_value(field_name='log.origin.process.start')):
         base.get_field_value(
-            field_name='process',
+            field_name='log.origin.process',
             create_namespaces=True
         ).uptime = (base.event.created - process_start).seconds
 
-    base.process = base.process or Process()
-    base.process.title = record.processName
-    base.process.pid = record.process
-    base.process.thread = base.process.thread or ProcessThread()
-    base.process.thread.id = record.thread
-    base.process.thread.name = record.threadName
+    base.log.origin.process = base.log.origin.process or Process()
+    base.log.origin.process.title = record.processName
+    base.log.origin.process.pid = record.process
+    base.log.origin.process.thread = base.log.origin.process.thread or ProcessThread()
+    base.log.origin.process.thread.id = record.thread
+    base.log.origin.process.thread.name = record.threadName
 
     base.message = record.msg
 
@@ -730,7 +730,7 @@ def related_from_ecs_email(ecs_email: Email) -> Related:
             match: MatchNode = RFC5321_RULESET['Stamp'].evaluate(received_value)
         except NoMatchError:
             LOG.warning(
-                msg='The `Receive` value did not match the RFC definition and therefore could not be parsed.',
+                msg='The `Received` value did not match the RFC definition and therefore could not be parsed.',
                 exc_info=exc_info(),
                 extra=dict(
                     error=dict(input=received_value),
