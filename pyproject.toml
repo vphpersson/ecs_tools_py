@@ -1,6 +1,6 @@
 [project]
 name = "ecs_tools_py"
-version = "1.4"
+version = "1.41"
 dependencies = [
     "ecs_py @ git+https://github.com/vphpersson/ecs_py.git",
     'string_utils_py @ git+https://github.com/vphpersson/string_utils_py.git#egg=string_utils_py'
