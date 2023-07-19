@@ -148,7 +148,7 @@ def network_entry_from_socket(socket: socket_class) -> Network:
     )
 
 
-def url_entry_from_string(url: str, public_suffix_list_trie: 'PublicSuffixListTrie' | None = None) -> URL:
+def url_entry_from_string(url: str, public_suffix_list_trie: PublicSuffixListTrie | None = None) -> URL:
     """
     Produce an ECS URL entry from a URL string.
 
@@ -312,7 +312,7 @@ def entry_from_http_message(
     include_decompressed_body: bool = False,
     use_host_header: bool = False,
     use_forwarded_header: bool = False,
-    public_suffix_list_trie: 'PublicSuffixListTrie' | None = None,
+    public_suffix_list_trie: PublicSuffixListTrie | None = None,
     body_limit: int | None = 4096
 ) -> Base:
     """
