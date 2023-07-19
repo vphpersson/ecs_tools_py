@@ -15,7 +15,6 @@ from re import compile as re_compile, Pattern as RePattern
 # NOTE: It is necessary to import the whole module in order to retrieve classes from it dynamically.
 import ecs_py
 from ecs_py import Base, ECSEntry
-from psutil import Process as PsutilProcess
 
 from ecs_tools_py.exceptions import UnexpectedFieldsError, NamespaceFieldIsNotDataclassError, UnhandledDerivedFieldError
 
@@ -62,12 +61,20 @@ def make_process_args() -> list[str]:
     return sys_orig_argv
 
 
-def make_process_executable() -> str:
-    return PsutilProcess().exe()
+def make_process_executable() -> str | None:
+    try:
+        from psutil import Process as PsutilProcess
+        return PsutilProcess().exe()
+    except ImportError:
+        return None
 
 
-def make_process_start() -> datetime:
-    return datetime.fromtimestamp(PsutilProcess().create_time()).astimezone()
+def make_process_start() -> datetime | None:
+    try:
+        from psutil import Process as PsutilProcess
+        return datetime.fromtimestamp(PsutilProcess().create_time()).astimezone()
+    except ImportError:
+        return None
 
 
 def make_process_pid() -> int:
@@ -83,16 +90,20 @@ def make_process_parent_pid() -> int:
 
 
 def make_process_user_name() -> str | None:
-    process_user_name = PsutilProcess().username()
-
     try:
-        from os import getuid
-        if process_user_name == str(getuid()):
-            return None
-    except ImportError:
-        pass
+        from psutil import Process as PsutilProcess
+        process_user_name = PsutilProcess().username()
 
-    return process_user_name
+        try:
+            from os import getuid
+            if process_user_name == str(getuid()):
+                return None
+        except ImportError:
+            pass
+
+        return process_user_name
+    except:
+        return None
 
 
 def make_process_user_id() -> str | None:
