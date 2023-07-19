@@ -26,24 +26,20 @@ from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, P
     HttpRequest as ECSHttpRequest, HttpResponse as ECSHttpResponse, HttpBody, URL, UserAgent as ECSUserAgent, \
     UserAgentDevice, OS, Network, Client, Server, Destination, Source, ECSEntry, EmailAttachmentFile, Hash, \
     EmailBody, Email, BCC, CC, From, ReplyTo, To, EmailAttachment, Related, SMTP, User
-from psutil import boot_time as psutil_boot_time
 from string_utils_py import to_snake_case
-from http_lib.structures.message import Message as HTTPMessage, Request as HTTPRequest, Response as HTTPResponse
-from http_lib.parse.uri import parse_uri, parse_query_string, ParsedURI
-from http_lib.parse.header.forwarded import parse_forwarded_header_value, ParameterParsedForwardedElement
-from http_lib.parse.header.content_type import parse_content_type
-from http_lib.parse.host import parse_host, IPvFutureString
-from http_lib.parse.content import decompress_body
-from public_suffix.structures.public_suffix_list_trie import PublicSuffixListTrie
-from user_agents import parse as user_agents_parse
-from user_agents.parsers import UserAgent
-from magic import from_buffer as magic_from_buffer
-from abnf_parse.exceptions import NoMatchError
-from abnf_parse.rulesets.rfc5321 import RFC5321_RULESET
-from abnf_parse.structures.match_node import MatchNode
 
 from ecs_tools_py.system import entry_from_system
 from ecs_tools_py.structures import SigningInformation
+
+try:
+    from http_lib.structures.message import Message as HTTPMessage
+except ImportError:
+    HTTPMessage = None
+
+try:
+    from public_suffix.structures.public_suffix_list_trie import PublicSuffixListTrie
+except ImportError:
+    PublicSuffixListTrie = None
 
 LOG: Final[Logger] = getLogger(__name__)
 
@@ -152,7 +148,7 @@ def network_entry_from_socket(socket: socket_class) -> Network:
     )
 
 
-def url_entry_from_string(url: str, public_suffix_list_trie: PublicSuffixListTrie | None = None) -> URL:
+def url_entry_from_string(url: str, public_suffix_list_trie: 'PublicSuffixListTrie' | None = None) -> URL:
     """
     Produce an ECS URL entry from a URL string.
 
@@ -160,6 +156,8 @@ def url_entry_from_string(url: str, public_suffix_list_trie: PublicSuffixListTri
     :param public_suffix_list_trie: A Public Suffix List trie that enables additional parsing of the URL.
     :return: An ECS URL entry produced from a URL string.
     """
+
+    from http_lib.parse.uri import parse_uri, parse_query_string, ParsedURI
 
     parsed_uri: ParsedURI = parse_uri(uri_string=url, public_suffix_list_trie=public_suffix_list_trie)
 
@@ -202,6 +200,8 @@ def entry_from_host_header_value(
     :return: An ECS entry populated with parsed values.
     """
 
+    from http_lib.parse.host import parse_host, IPvFutureString
+
     host_name: str | IPvFutureString | IPv4Address | IPv6Address
     host_port: int | None
     host_name, host_port = parse_host(host_value=host_header_value)
@@ -229,6 +229,8 @@ def entries_from_forwarded_header_value(
     :param entry_type_host: The type of ECS entry to be populated with values parsed from the "host" value.
     :return: A pair of ECS entries populated with parsed values.
     """
+
+    from http_lib.parse.header.forwarded import parse_forwarded_header_value, ParameterParsedForwardedElement
 
     forwarded_elements: list[ParameterParsedForwardedElement] = parse_forwarded_header_value(
         forwarded_value=forwarded_header_value,
@@ -278,6 +280,9 @@ def user_agent_entry_from_string(
     :return: An ECS UserAgent entry produced from the user agent string.
     """
 
+    from user_agents import parse as user_agents_parse
+    from user_agents.parsers import UserAgent
+
     if not user_agent_string:
         return None
 
@@ -307,7 +312,7 @@ def entry_from_http_message(
     include_decompressed_body: bool = False,
     use_host_header: bool = False,
     use_forwarded_header: bool = False,
-    public_suffix_list_trie: PublicSuffixListTrie | None = None,
+    public_suffix_list_trie: 'PublicSuffixListTrie' | None = None,
     body_limit: int | None = 4096
 ) -> Base:
     """
@@ -322,6 +327,11 @@ def entry_from_http_message(
     :param body_limit: The maximum number of bytes that can be included in the body, or `None` to not use a limit.
     :return:
     """
+
+    from http_lib.structures.message import Request as HTTPRequest, Response as HTTPResponse
+    from http_lib.parse.header.content_type import parse_content_type
+    from http_lib.parse.content import decompress_body
+    from magic import from_buffer as magic_from_buffer
 
     headers: dict[str, list[str]] = defaultdict(list)
     for name, value in http_message.headers:
@@ -554,10 +564,14 @@ def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None =
         base.event.timezone = event_timezone_from_datetime(dt=base.event.created)
 
     if add_host_uptime:
-        base.get_field_value(
-            field_name='host',
-            create_namespaces=True
-        ).uptime = (base.event.created - datetime.fromtimestamp(psutil_boot_time()).astimezone()).seconds
+        try:
+            from psutil import boot_time as psutil_boot_time
+            base.get_field_value(
+                field_name='host',
+                create_namespaces=True
+            ).uptime = (base.event.created - datetime.fromtimestamp(psutil_boot_time()).astimezone()).seconds
+        except ImportError:
+            pass
 
     if add_process_uptime and (process_start := base.get_field_value(field_name='log.origin.process.start')):
         base.get_field_value(
@@ -693,6 +707,10 @@ def related_from_ecs_email(ecs_email: Email) -> Related:
     :param ecs_email: The ECS email entry from which to extract information.
     :return: An ECS Related entry.
     """
+
+    from abnf_parse.exceptions import NoMatchError
+    from abnf_parse.rulesets.rfc5321 import RFC5321_RULESET
+    from abnf_parse.structures.match_node import MatchNode
 
     users: set[str] = set()
     hosts: set[str] = set()

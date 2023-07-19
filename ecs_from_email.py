@@ -39,6 +39,12 @@ def main():
         extract_body_content=True
     )
 
+    if bodies := ecs_email.bodies:
+        if any(body.content_type == 'text/plain' for body in bodies):
+            for body in bodies:
+                if body.content_type != 'text/plain':
+                    body.content = None
+
     print(Base(email=ecs_email, related=related_from_ecs_email(ecs_email=ecs_email)))
 
 
