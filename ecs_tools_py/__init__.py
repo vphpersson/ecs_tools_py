@@ -935,6 +935,7 @@ def make_log_handler(
     base_class: Type[_T],
     generate_field_names: Sequence[str] | None = None,
     provider_name: str | None = None,
+    enrichment_map: dict[str, Any] | None = None,
     main_dataset_fallback: str | None = None,
     signing_information: SigningInformation | None = None
 ) -> Type[_T]:
@@ -946,6 +947,7 @@ def make_log_handler(
         derived from the `logging.LogRecord` instances. A value of `None` indicates that all field-values that are
         supported should be generated.
     :param provider_name: The name of the source of the event.
+    :param enrichment_map: A map of static enrichment data to be added to the event.
     :param main_dataset_fallback: A value to be used for `event.dataset` in case its generated value is "__main__".
     :param signing_information: Information needed for signing log record messages. Provision implies use of signing.
     :return: A log handler that inherits from the provided base class and emits records in the ECS format.
@@ -1013,16 +1015,18 @@ def make_log_handler(
         def _emit_generate_fields_error_message(self, record_name: str, exception: BaseException) -> None:
             frameinfo = getframeinfo(currentframe())
 
-            log_entry_dict: dict[str, Any] = Base(
-                error=error_from_exception(exception=exception),
-                message='An error occurred when generating fields for a log record.',
-                log=Log(logger=self.logger),
-                event=Event(
-                    provider=provider_name,
-                    dataset='ecs_tools_py',
-                    sequence=self._get_sequence_number()
+            log_entry_dict: dict[str, Any] = dict(
+                Base(
+                    error=error_from_exception(exception=exception),
+                    message='An error occurred when generating fields for a log record.',
+                    log=Log(logger=self.logger),
+                    event=Event(
+                        provider=provider_name,
+                        dataset='ecs_tools_py',
+                        sequence=self._get_sequence_number()
+                    )
                 )
-            ).to_dict()
+            )
 
             message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=json_dumps_default)
 
@@ -1088,6 +1092,8 @@ def make_log_handler(
                     extra_data_namespace_name = 'data'
             else:
                 extra_data_namespace_name = base.event.dataset
+
+            base.assign(value_dict=(enrichment_map or {}))
 
             log_entry_dict: dict[str, Any] = dict(base)
 
