@@ -1,7 +1,7 @@
 from logging import getLogger, Logger
 from collections import defaultdict
 from datetime import datetime
-from typing import Final, Type, Sequence, TypeVar, cast, Any
+from typing import Final, Type, Sequence, TypeVar, Any
 from re import compile as re_compile, Pattern as RePattern
 from logging import LogRecord, WARNING, ERROR, CRITICAL, Handler
 from pathlib import PurePath
@@ -22,7 +22,7 @@ from time import mktime
 from hashlib import md5, sha1, sha256
 from sys import exc_info
 
-from ecs_py import Log, LogOrigin, LogOriginFile, Error, Base, Event, Process, ProcessThread, Http, \
+from ecs_py import Log, Error, Base, Event, Http, \
     HttpRequest as ECSHttpRequest, HttpResponse as ECSHttpResponse, HttpBody, URL, UserAgent as ECSUserAgent, \
     UserAgentDevice, OS, Network, Client, Server, Destination, Source, ECSEntry, EmailAttachmentFile, Hash, \
     EmailBody, Email, BCC, CC, From, ReplyTo, To, EmailAttachment, Related, SMTP, User
@@ -552,7 +552,8 @@ def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None =
 
     if record.levelno in {WARNING, ERROR, CRITICAL}:
         if record.exc_info:
-            base |= error_entry_from_exc_info(exc_info=record.exc_info)
+            base.error = base.error or Error()
+            base.error |= error_entry_from_exc_info(exc_info=record.exc_info)
         else:
             base.set_field_value(field_name='error.message', value=record.msg)
 
