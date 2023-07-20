@@ -534,31 +534,27 @@ def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None =
 
     base: Base = entry_from_system(field_names=field_names)
 
-    base.log = base.log or Log()
-    base.log.origin = base.log.origin or LogOrigin()
-    base.log.origin.file = base.log.origin.file or LogOriginFile()
-    base.log.origin.file.path = record.pathname
-    base.log.origin.file.name = PurePath(record.pathname).name
-    base.log.origin.file.line = record.lineno
-    base.log.origin.function = record.funcName
-    base.log.level = record.levelname
+    base.assign(
+        value_dict={
+            'event.created': datetime.fromtimestamp(record.created).astimezone(),
+            'event.dataset': record.name.split('.')[0],
+            'log.origin.file.path': str(PurePath(record.pathname)),
+            'log.origin.file.name': PurePath(record.pathname).name,
+            'log.origin.file.line': record.lineno,
+            'log.origin.function': record.funcName,
+            'log.origin.process.title': record.processName,
+            'log.origin.process.pid': record.process,
+            'log.origin.process.thread.id': record.thread,
+            'log.origin.process.thread.name': record.threadName,
+            'log.level': record.levelname
+        }
+    )
 
     if record.levelno in {WARNING, ERROR, CRITICAL}:
-        base.error = base.error or Error()
-
         if record.exc_info:
-            exc_info_error_entry: Error = error_entry_from_exc_info(exc_info=record.exc_info)
-
-            base.error.message = exc_info_error_entry.message
-            base.error.stack_trace = exc_info_error_entry.stack_trace
-            base.error.type = exc_info_error_entry.type
-            base.error.id = exc_info_error_entry.id
+            base |= error_entry_from_exc_info(exc_info=record.exc_info)
         else:
-            base.error.message = record.msg
-
-    base.event = base.event or Event()
-    base.event.created = datetime.fromtimestamp(record.created).astimezone()
-    base.event.dataset = record.name.split('.')[0]
+            base.set_field_value(field_name='error.message', value=record.msg)
 
     if add_event_timezone:
         base.event.timezone = event_timezone_from_datetime(dt=base.event.created)
@@ -566,25 +562,18 @@ def entry_from_log_record(record: LogRecord, field_names: Sequence[str] | None =
     if add_host_uptime:
         try:
             from psutil import boot_time as psutil_boot_time
-            base.get_field_value(
-                field_name='host',
-                create_namespaces=True
-            ).uptime = (base.event.created - datetime.fromtimestamp(psutil_boot_time()).astimezone()).seconds
+            base.set_field_value(
+                field_name='host.uptime',
+                value=(base.event.created - datetime.fromtimestamp(psutil_boot_time()).astimezone()).seconds
+            )
         except ImportError:
             pass
 
     if add_process_uptime and (process_start := base.get_field_value(field_name='log.origin.process.start')):
-        base.get_field_value(
-            field_name='log.origin.process',
-            create_namespaces=True
-        ).uptime = (base.event.created - process_start).seconds
-
-    base.log.origin.process = base.log.origin.process or Process()
-    base.log.origin.process.title = record.processName
-    base.log.origin.process.pid = record.process
-    base.log.origin.process.thread = base.log.origin.process.thread or ProcessThread()
-    base.log.origin.process.thread.id = record.thread
-    base.log.origin.process.thread.name = record.threadName
+        base.set_field_value(
+            field_name='log.origin.process.uptime',
+            value=(base.event.created - process_start).seconds,
+        )
 
     base.message = record.msg
 
@@ -1000,16 +989,18 @@ def make_log_handler(
                     pathname=frameinfo.filename,
                     lineno=frameinfo.lineno,
                     msg=json_dumps(
-                        obj=Base(
-                            error=error_from_exception(exception=exception),
-                            message='An error occurred when attempting to sign a log record message.',
-                            log=Log(logger=self.logger),
-                            event=Event(
-                                provider=provider_name,
-                                dataset='ecs_tools_py',
-                                sequence=self._get_sequence_number()
+                        obj=dict(
+                            Base(
+                                error=error_from_exception(exception=exception),
+                                message='An error occurred when attempting to sign a log record message.',
+                                log=Log(logger=self.logger),
+                                event=Event(
+                                    provider=provider_name,
+                                    dataset='ecs_tools_py',
+                                    sequence=self._get_sequence_number()
+                                )
                             )
-                        ).to_dict(),
+                        ),
                         sort_keys=True,
                         default=json_dumps_default
                     ),
@@ -1062,50 +1053,47 @@ def make_log_handler(
             :return: None
             """
 
+            base: Base
+
             try:
-                ecs_log_entry = entry_from_log_record(record=record, field_names=self._generate_field_names)
-            except BaseException as e:
+                base = entry_from_log_record(record=record, field_names=self._generate_field_names)
+            except Exception as e:
                 self._emit_generate_fields_error_message(record_name=record.name, exception=e)
-                ecs_log_entry = entry_from_log_record(record=record, field_names=[])
+                base = entry_from_log_record(record=record, field_names=[])
 
             # Assign information about the log and provider that was provided to the make function, and a sequence
             # number.
 
-            cast(Log, ecs_log_entry.get_field_value(field_name='log', create_namespaces=True)).logger = self.logger
-
-            ecs_log_entry_event: Event = cast(
-                Event,
-                ecs_log_entry.get_field_value(
-                    field_name='event',
-                    create_namespaces=True
-                )
+            base.set_field_value(field_name='log.logger', value=self.logger)
+            base.assign(
+                value_dict={
+                    'event.provider': self._provider_name,
+                    'event.sequence': self._get_sequence_number()
+                }
             )
-            ecs_log_entry_event.provider = self._provider_name
-            ecs_log_entry_event.sequence = self._get_sequence_number()
 
             # Set `event.dataset` to a proper value and determine the name of the namespace that will store extra data.
 
-            if ecs_log_entry_event.dataset == '__main__':
+            if base.event.dataset == '__main__':
                 if main_dataset_fallback:
-                    ecs_log_entry_event.dataset = extra_data_namespace_name = main_dataset_fallback
-                elif ecs_log_entry_event.provider and (provider_name_dataset := _dataset_from_provider_name(provider_name=ecs_log_entry_event.provider)):
-                    ecs_log_entry_event.dataset = extra_data_namespace_name = provider_name_dataset
+                    base.event.dataset = extra_data_namespace_name = main_dataset_fallback
+                elif base.event.provider and (provider_name_dataset := _dataset_from_provider_name(provider_name=base.event.provider)):
+                    base.event.dataset = extra_data_namespace_name = provider_name_dataset
                 else:
                     extra_data_namespace_name = 'data'
-            elif not ecs_log_entry_event.dataset:
-                if ecs_log_entry_event.provider and (provider_name_dataset := _dataset_from_provider_name(provider_name=ecs_log_entry_event.provider)):
-                    ecs_log_entry_event.dataset = extra_data_namespace_name = provider_name_dataset
+            elif not base.event.dataset:
+                if base.event.provider and (provider_name_dataset := _dataset_from_provider_name(provider_name=base.event.provider)):
+                    base.event.dataset = extra_data_namespace_name = provider_name_dataset
                 else:
                     extra_data_namespace_name = 'data'
             else:
-                extra_data_namespace_name = ecs_log_entry_event.dataset
+                extra_data_namespace_name = base.event.dataset
 
-            log_entry_dict: dict[str, Any] = ecs_log_entry.to_dict()
+            log_entry_dict: dict[str, Any] = dict(base)
 
             # Populate a namespace with data provided in the `extra` parameter.
 
-            if extra_keys := set(record.__dict__.keys()) - _RESERVED_LOG_RECORD_KEYS:
-
+            if extra_keys := (set(record.__dict__.keys()) - _RESERVED_LOG_RECORD_KEYS):
                 extra_dict: dict[str, Any] = {key: record.__dict__[key] for key in extra_keys}
 
                 # (ECS Logger Handler options that can be passed in `extra`.)
@@ -1124,14 +1112,18 @@ def make_log_handler(
 
             # Create the JSON-string representation of the log record's dictionary, which constitutes the log message.
 
-            message: str = json_dumps(obj=log_entry_dict, sort_keys=True, default=json_dumps_default)
+            message: str = json_dumps(
+                obj=log_entry_dict,
+                sort_keys=bool(signing_information),
+                default=json_dumps_default
+            )
 
             # Sign the message if signing information has been provided
 
             if signing_information is not None:
                 try:
                     message: str = self._sign(message=message, log_entry_dict=log_entry_dict)
-                except BaseException as e:
+                except Exception as e:
                     self._emit_signing_error_message(record_name=record.name, exception=e)
 
             record.msg = message
