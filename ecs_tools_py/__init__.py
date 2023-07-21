@@ -1,4 +1,5 @@
 from logging import getLogger, Logger
+from logging.handlers import TimedRotatingFileHandler
 from collections import defaultdict
 from datetime import datetime
 from typing import Final, Type, Sequence, TypeVar, Any
@@ -21,6 +22,9 @@ from email import message_from_string as email_message_from_string
 from time import mktime
 from hashlib import md5, sha1, sha256
 from sys import exc_info
+from argparse import Action as ArgparseAction, ArgumentParser, Namespace as ArgparseNamespace
+from urllib.parse import ParseResult, urlparse, parse_qs
+from json import loads as json_loads
 
 from ecs_py import Log, Error, Base, Event, Http, \
     HttpRequest as ECSHttpRequest, HttpResponse as ECSHttpResponse, HttpBody, URL, UserAgent as ECSUserAgent, \
@@ -34,12 +38,14 @@ from ecs_tools_py.structures import SigningInformation
 try:
     from http_lib.structures.message import Message as HTTPMessage
 except ImportError:
-    HTTPMessage = None
+    HTTPMessage = Type[None]
 
 try:
     from public_suffix.structures.public_suffix_list_trie import PublicSuffixListTrie
 except ImportError:
-    PublicSuffixListTrie = None
+    PublicSuffixListTrie = Type[None]
+
+
 
 LOG: Final[Logger] = getLogger(__name__)
 
@@ -1145,3 +1151,76 @@ def make_log_handler(
             super().emit(record=record)
 
     return ECSLoggerHandler
+
+
+def make_log_action(event_provider: str, log: Logger) -> Type[ArgparseAction]:
+
+    class LogAction(ArgparseAction):
+        def __call__(
+            self,
+            parser: ArgumentParser,
+            namespace: ArgparseNamespace,
+            log_specifier: str,
+            option_string: str = None
+        ):
+            parse_result: ParseResult = urlparse(url=log_specifier)
+            log_handler_qs_kwargs: dict[str, list[str]] = parse_qs(qs=parse_result.query)
+
+            provider_name: str = next(
+                iter(
+                    log_handler_qs_kwargs.get('provider_name', [event_provider])
+                )
+            )
+            fields: list[str] = next(
+                iter(
+                    log_handler_qs_kwargs.get(
+                        'fields',
+                        [
+                            ','.join([
+                                'event.timezone',
+                                'host.name',
+                                'host.hostname'
+                            ])
+                        ]
+                    )
+                )
+            ).split(',')
+            enrichment_map: dict[str, Any] = json_loads(
+                next(
+                    iter(
+                        log_handler_qs_kwargs.get(
+                            'enrichment_map',
+                            ['{}']
+                        )
+                    )
+                )
+            )
+
+            log_handler_base_class: Type[Handler]
+            log_handler_kwargs: dict[str, Any]
+
+            match parse_result.scheme:
+                case 'udp':
+                    from rfc5424logging import Rfc5424SysLogHandler
+                    log_handler_base_class = Rfc5424SysLogHandler
+                    log_handler_kwargs = dict(address=(parse_result.hostname, int(parse_result.port)))
+                case 'file':
+                    log_handler_base_class = TimedRotatingFileHandler
+                    log_handler_kwargs = dict(
+                        filename=parse_result.path,
+                        when=next(iter(log_handler_qs_kwargs.get('when', ['D'])))
+                    )
+                case _:
+                    parser.error(f'Unsupported log scheme: {parse_result.scheme}')
+                    return
+
+            log_handler = make_log_handler(
+                base_class=log_handler_base_class,
+                provider_name=provider_name,
+                enrichment_map=enrichment_map,
+                generate_field_names=fields
+            )(**log_handler_kwargs)
+
+            log.addHandler(hdlr=log_handler)
+
+    return LogAction
