@@ -4,7 +4,7 @@ from logging.handlers import TimedRotatingFileHandler
 from collections import defaultdict
 from datetime import datetime
 from typing import Final, Type, Sequence, TypeVar, Any
-from re import compile as re_compile, Pattern as RePattern
+from re import compile as re_compile, Pattern as RePattern, IGNORECASE as RE_IGNORECASE
 from logging import LogRecord, WARNING, ERROR, CRITICAL, Handler
 from pathlib import PurePath
 from traceback import format_tb
@@ -22,10 +22,11 @@ from email.header import decode_header
 from email import message_from_string as email_message_from_string
 from time import mktime
 from hashlib import md5, sha1, sha256
-from sys import stdout, stderr, exc_info
+from sys import stdout, stderr
 from argparse import Action as ArgparseAction, ArgumentParser, Namespace as ArgparseNamespace
 from urllib.parse import ParseResult, urlparse, parse_qs
 from json import loads as json_loads
+from itertools import chain
 
 from ecs_py import Log, Error, Base, Event, Http, \
     HttpRequest as ECSHttpRequest, HttpResponse as ECSHttpResponse, HttpBody, URL, UserAgent as ECSUserAgent, \
@@ -53,6 +54,11 @@ LOG: Final[Logger] = getLogger(__name__)
 _DT_TIMEZONE_PATTERN: Final[RePattern] = re_compile(pattern=r'^(.{3})(.{2}).*$')
 
 _EMAIL_HEADER_FIX_PATTERN: Final[RePattern] = re_compile(pattern=r'(^\s+|\t)')
+
+_FROM_BY_PATTERN: Final[RePattern] = re_compile(
+    pattern=r'(?:^from|(?:^| )by) ([^ ]+(?: \([^)]+\))?)',
+    flags=RE_IGNORECASE
+)
 
 # NOTE: May need to be maintained.
 _RESERVED_LOG_RECORD_KEYS: Final[set[str]] = {
@@ -706,7 +712,7 @@ def related_from_ecs_email(ecs_email: Email) -> Related:
     """
 
     from abnf_parse.exceptions import NoMatchError
-    from abnf_parse.rulesets.rfc5321 import RFC5321_RULESET
+    from abnf_parse.rulesets.rfc5321 import RFC5321_LENIENT_RULESET
     from abnf_parse.structures.match_node import MatchNode
 
     users: set[str] = set()
@@ -742,22 +748,40 @@ def related_from_ecs_email(ecs_email: Email) -> Related:
         ip_addresses.add(x_original_ip)
 
     for received_value in ecs_email.headers.get('received', []):
-        try:
-            match: MatchNode = RFC5321_RULESET['Stamp'].evaluate(received_value)
-        except NoMatchError:
-            LOG.warning(
-                msg='The `Received` value did not match the RFC definition and therefore could not be parsed.',
-                exc_info=exc_info(),
-                extra=dict(
-                    error=dict(input=received_value),
-                    _ecs_logger_handler_options=dict(merge_extra=True)
+        # The format of real-world values for RFC5321 `Stamp` are non-compliant more often than not, deviating with
+        # various minor subtleties. Instead of parsing `Stamp` with the RFC5321 definition, perform a heuristic match
+        # with a regular expression pattern.
+
+        # Extract the `Extended-Domain` part of `From-domain` and `By-domain` sections
+        for by_from_match in _FROM_BY_PATTERN.findall(string=received_value):
+            # Attempt to parse the `Extended-Domain` value as an `Extended-Domain`...
+            try:
+                extended_domain_match: MatchNode = RFC5321_LENIENT_RULESET['Extended-Domain'].evaluate(
+                    source=by_from_match
                 )
-            )
-        else:
-            for ipv4_address_match in match.search(name='IPv4-address-literal', search_match=True):
-                ip_addresses.add(ipv4_address_match.get_value().decode())
-            for ipv6_address_match in match.search(name='IPv6-addr', search_match=True):
-                ip_addresses.add(ipv6_address_match.get_value().decode())
+
+                # Extract the `Domain` value and IP address values.
+
+                for domain in extended_domain_match.search(name='Domain'):
+                    if (domain_value := domain.get_value().decode().lower()) != 'unknown':
+                        hosts.add(domain_value)
+                for address in chain(extended_domain_match.search('IPv4-address-literal'), extended_domain_match.search('IPv6-addr')):
+                    ip_addresses.add(address.get_value().decode())
+            except NoMatchError:
+                # Disregard everything but the first whitespace-separated part.
+                first_part: str = by_from_match.split(' ', maxsplit=1)[0].lower()
+                # Try the parse the part as an IP address.
+                try:
+                    address_literal_match = RFC5321_LENIENT_RULESET['address-literal'].evaluate(source=first_part)
+                    for address in chain(address_literal_match.search('IPv4-address-literal'), address_literal_match.search('IPv6-addr')):
+                        ip_addresses.add(address.get_value().decode())
+                # Try to parse the part as a domain.
+                except NoMatchError:
+                    try:
+                        if (domain_value := RFC5321_LENIENT_RULESET['Domain'].evaluate(source=first_part).get_value().decode().lower()) != 'unknown':
+                            hosts.add(domain_value)
+                    except NoMatchError:
+                        pass
 
     return Related(
         hash=list(hashes) or None,
