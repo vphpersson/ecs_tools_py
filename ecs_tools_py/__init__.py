@@ -1,4 +1,5 @@
-from logging import getLogger, Logger
+import socket
+from logging import getLogger, Logger, StreamHandler
 from logging.handlers import TimedRotatingFileHandler
 from collections import defaultdict
 from datetime import datetime
@@ -21,7 +22,7 @@ from email.header import decode_header
 from email import message_from_string as email_message_from_string
 from time import mktime
 from hashlib import md5, sha1, sha256
-from sys import exc_info
+from sys import stdout, stderr, exc_info
 from argparse import Action as ArgparseAction, ArgumentParser, Namespace as ArgparseNamespace
 from urllib.parse import ParseResult, urlparse, parse_qs
 from json import loads as json_loads
@@ -611,8 +612,8 @@ def email_bodies_from_email_message(
             continue
 
         content: str | None = (
-            data.decode(encoding=part.get_content_charset() or 'charmap')
-            if (data := part.get_payload(decode=True)) and include_content and (include_non_text_content or part.get_content_maintype() == 'text')
+            data
+            if (data := part.get_payload()) and include_content and (include_non_text_content or part.get_content_maintype() == 'text')
             else None
         )
 
@@ -716,13 +717,14 @@ def related_from_ecs_email(ecs_email: Email) -> Related:
     for attr in {'bcc', 'cc', 'from_', 'reply_to', 'to'}:
         if user_host_entry := getattr(ecs_email, attr):
             for name in user_host_entry.name:
-                if name is not None:
+                if name:
                     users.add(name.lower())
             for address in user_host_entry.address:
-                users.add(address.lower())
-                user_name, host = address.split('@')
-                users.add(user_name.lower())
-                hosts.add(host.lower())
+                if address:
+                    users.add(address.lower())
+                    user_name, host = address.split('@')
+                    users.add(user_name.lower())
+                    hosts.add(host.lower())
 
     if (sender := ecs_email.sender) and sender.address:
         user_name, host = sender.address.split('@')
@@ -1203,15 +1205,36 @@ def make_log_action(event_provider: str, log: Logger) -> Type[ArgparseAction]:
                 case 'udp':
                     from rfc5424logging import Rfc5424SysLogHandler
                     log_handler_base_class = Rfc5424SysLogHandler
-                    log_handler_kwargs = dict(address=(parse_result.hostname, int(parse_result.port)))
+                    log_handler_kwargs = dict(
+                        address=(parse_result.hostname, int(parse_result.port)),
+                        socktype=socket.SOCK_DGRAM
+                    )
+                case 'tcp':
+                    from rfc5424logging import Rfc5424SysLogHandler
+                    log_handler_base_class = Rfc5424SysLogHandler
+                    log_handler_kwargs = dict(
+                        address=(parse_result.hostname, int(parse_result.port)),
+                        socktype=socket.SOCK_STREAM
+                    )
                 case 'file':
                     log_handler_base_class = TimedRotatingFileHandler
                     log_handler_kwargs = dict(
                         filename=parse_result.path,
                         when=next(iter(log_handler_qs_kwargs.get('when', ['D'])))
                     )
+                case '':
+                    match parse_result.path:
+                        case 'stdout':
+                            log_handler_base_class = StreamHandler
+                            log_handler_kwargs = dict(stream=stdout)
+                        case 'stderr':
+                            log_handler_base_class = StreamHandler
+                            log_handler_kwargs = dict(stream=stderr)
+                        case _:
+                            parser.error(f'Unsupported log specifier.')
+                            return
                 case _:
-                    parser.error(f'Unsupported log scheme: {parse_result.scheme}')
+                    parser.error(f'Unsupported log specifier scheme: {parse_result.scheme}')
                     return
 
             log_handler = make_log_handler(
