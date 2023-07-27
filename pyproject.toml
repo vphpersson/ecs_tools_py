@@ -1,6 +1,6 @@
 [project]
 name = "ecs_tools_py"
-version = "1.50"
+version = "1.51"
 dependencies = [
     "ecs_py @ git+https://github.com/vphpersson/ecs_py.git#egg=ecs_py",
     'string_utils_py @ git+https://github.com/vphpersson/string_utils_py.git#egg=string_utils_py'
@@ -12,14 +12,14 @@ user_agent = [
     'ua-parser',
 ]
 http = [
-    'git+https://github.com/vphpersson/http_lib.git#egg=http_lib',
+    'http_lib @ git+https://github.com/vphpersson/http_lib.git#egg=http_lib',
     'user-agents',
     'ua-parser',
     'python-magic'
 ]
 public_suffix = [
-    'git+https://github.com/vphpersson/public_suffix.git#egg=public_suffix',
-    'git+https://github.com/vphpersson/http_lib.git#egg=http_lib',
+    'public_suffix @ git+https://github.com/vphpersson/public_suffix.git#egg=public_suffix',
+    'http_lib @ git+https://github.com/vphpersson/http_lib.git#egg=http_lib',
 ]
 email = [
     'abnf_parse @ git+https://github.com/vphpersson/abnf_parse.git#egg=abnf_parse'
