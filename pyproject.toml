@@ -1,8 +1,8 @@
 [project]
 name = "ecs_tools_py"
-version = "1.48"
+version = "1.49"
 dependencies = [
-    "git+https://github.com/vphpersson/ecs_py.git",
+    "git+https://github.com/vphpersson/ecs_py.git#egg=ecs_py",
     'git+https://github.com/vphpersson/string_utils_py.git#egg=string_utils_py'
 ]
 
@@ -28,7 +28,7 @@ process = [
     'psutil'
 ]
 udp_cli = [
-    "git+https://github.com/vphpersson/ecs_py.git",
+    "git+https://github.com/vphpersson/ecs_py.git#egg=ecs_py",
     'git+https://github.com/vphpersson/string_utils_py.git#egg=string_utils_py',
     'git+https://github.com/vphpersson/rfc5424-logging-handler#egg=rfc5424-logging-handler'
 ]
