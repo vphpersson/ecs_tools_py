@@ -1,9 +1,9 @@
 [project]
 name = "ecs_tools_py"
-version = "1.49"
+version = "1.50"
 dependencies = [
-    "git+https://github.com/vphpersson/ecs_py.git#egg=ecs_py",
-    'git+https://github.com/vphpersson/string_utils_py.git#egg=string_utils_py'
+    "ecs_py @ git+https://github.com/vphpersson/ecs_py.git#egg=ecs_py",
+    'string_utils_py @ git+https://github.com/vphpersson/string_utils_py.git#egg=string_utils_py'
 ]
 
 [project.optional-dependencies]
@@ -22,13 +22,13 @@ public_suffix = [
     'git+https://github.com/vphpersson/http_lib.git#egg=http_lib',
 ]
 email = [
-    'git+https://github.com/vphpersson/abnf_parse.git#egg=abnf_parse'
+    'abnf_parse @ git+https://github.com/vphpersson/abnf_parse.git#egg=abnf_parse'
 ]
 process = [
     'psutil'
 ]
 udp_cli = [
-    "git+https://github.com/vphpersson/ecs_py.git#egg=ecs_py",
-    'git+https://github.com/vphpersson/string_utils_py.git#egg=string_utils_py',
-    'git+https://github.com/vphpersson/rfc5424-logging-handler#egg=rfc5424-logging-handler'
+    "ecs_py @ git+https://github.com/vphpersson/ecs_py.git#egg=ecs_py",
+    'string_utils_py @ git+https://github.com/vphpersson/string_utils_py.git#egg=string_utils_py',
+    'rfc5424-logging-handler @ git+https://github.com/vphpersson/rfc5424-logging-handler#egg=rfc5424-logging-handler'
 ]
