@@ -116,6 +116,7 @@ def make_process_user_id() -> str | None:
 
 def make_process_user_effective_name() -> str | None:
     try:
+        from psutil import Process as PsutilProcess
         from pwd import getpwuid
         return getpwuid(PsutilProcess().uids().effective).pw_name
     except ImportError:
