@@ -300,7 +300,7 @@ def entry_from_system(field_names: Sequence[str | None] = None) -> Base:
                     case 'log.origin.process.command_line':
                         if process_args := getattr(namespace_storage, 'args', None):
                             value = derive_process_command_line(args=process_args)
-                    case 'log.origin.process.process.name':
+                    case 'log.origin.process.name':
                         if process_executable := getattr(namespace_storage, 'executable', None):
                             value = derive_process_name(executable=process_executable)
                     case _:
